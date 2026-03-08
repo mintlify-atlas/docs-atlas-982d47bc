@@ -1,0 +1,398 @@
+---
+title: "Query Interface"
+description: "Build SQL queries with Swift syntax"
+---
+
+The Query Interface lets you write database queries using Swift methods instead of raw SQL.
+
+## Overview
+
+The Query Interface provides a type-safe way to build SQL queries:
+
+```swift
+// Instead of raw SQL:
+let sql = "SELECT * FROM player WHERE score > ? ORDER BY score DESC LIMIT 10"
+let players = try Player.fetchAll(db, sql: sql, arguments: [1000])
+
+// Use the Query Interface:
+let players = try Player
+    .filter(Column("score") > 1000)
+    .order(Column("score").desc)
+    .limit(10)
+    .fetchAll(db)
+```
+
+## Building Queries
+
+### Starting a Query
+
+Start with a [`TableRecord`](/api/table-record) type:
+
+```swift
+struct Player: TableRecord {
+    static let databaseTableName = "player"
+}
+
+let request = Player.all()
+```
+
+### Filtering Rows
+
+Use `filter` to add WHERE clauses:
+
+```swift
+// WHERE score > 1000
+Player.filter(Column("score") > 1000)
+
+// WHERE name = 'Arthur'
+Player.filter(Column("name") == "Arthur")
+
+// WHERE score > 1000 AND teamId = 1
+Player.filter(Column("score") > 1000 && Column("teamId") == 1)
+
+// WHERE score > 1000 OR score < 100
+Player.filter(Column("score") > 1000 || Column("score") < 100)
+```
+
+### Ordering Results
+
+Use `order` to add ORDER BY clauses:
+
+```swift
+// ORDER BY score DESC
+Player.order(Column("score").desc)
+
+// ORDER BY name ASC
+Player.order(Column("name"))
+
+// ORDER BY score DESC, name ASC
+Player.order(Column("score").desc, Column("name"))
+```
+
+### Limiting Results
+
+```swift
+// LIMIT 10
+Player.limit(10)
+
+// LIMIT 10 OFFSET 20
+Player.limit(10, offset: 20)
+```
+
+### Selecting Columns
+
+```swift
+// SELECT id, name
+Player.select(Column("id"), Column("name"))
+
+// SELECT COUNT(*)
+Player.select(count(Column("*")))
+
+// SELECT MAX(score) AS maxScore
+Player.select(max(Column("score")).forKey("maxScore"))
+```
+
+### Distinct Results
+
+```swift
+// SELECT DISTINCT name
+Player.select(Column("name")).distinct()
+```
+
+### Grouping
+
+```swift
+// GROUP BY teamId
+Player.group(Column("teamId"))
+
+// GROUP BY teamId HAVING COUNT(*) > 5
+Player
+    .group(Column("teamId"))
+    .having(count(Column("*")) > 5)
+```
+
+## Column Expressions
+
+### Comparisons
+
+```swift
+Column("score") == 100
+Column("score") != 100
+Column("score") < 100
+Column("score") <= 100
+Column("score") > 100
+Column("score") >= 100
+```
+
+### Arithmetic
+
+```swift
+Column("score") + 10
+Column("score") - 10
+Column("score") * 2
+Column("score") / 2
+```
+
+### Logical Operators
+
+```swift
+Column("active") && Column("verified")
+Column("active") || Column("admin")
+!Column("deleted")
+```
+
+### String Operations
+
+```swift
+// LIKE
+Column("name").like("Art%")
+
+// case-insensitive comparison  
+Column("email").collating(.nocase) == "[email protected]"
+```
+
+### NULL Checks
+
+```swift
+Column("deletedAt") == nil  // IS NULL
+Column("deletedAt") != nil  // IS NOT NULL
+```
+
+### IN Operator
+
+```swift
+[1, 2, 3].contains(Column("id"))
+Column("status").in(["active", "pending"])
+```
+
+### BETWEEN
+
+```swift
+(100...200).contains(Column("score"))
+```
+
+## Aggregate Functions
+
+### count
+
+```swift
+count(Column("*"))
+count(Column("id"))
+count(distinct: Column("teamId"))
+```
+
+### min and max
+
+```swift
+min(Column("score"))
+max(Column("score"))
+```
+
+### sum and average
+
+```swift
+sum(Column("score"))
+average(Column("score"))
+```
+
+### length
+
+```swift
+length(Column("name"))
+```
+
+## Joining Tables
+
+See [`associations`](/api/associations) for details on defining and using joins.
+
+### Basic Join
+
+```swift
+struct Player: TableRecord {
+    static let team = belongsTo(Team.self)
+}
+
+// INNER JOIN
+Player.joining(required: Player.team)
+
+// LEFT JOIN  
+Player.joining(optional: Player.team)
+```
+
+### Including Associated Records
+
+```swift
+// Fetch players with their teams
+let request = Player.including(required: Player.team)
+for row in try Row.fetchAll(db, request) {
+    let player: Player = row["player"]
+    let team: Team = row["team"]
+}
+```
+
+## SQL Literals
+
+Use SQL literals for complex expressions:
+
+```swift
+Player.filter(literal: "score > 1000")
+
+let minScore = 1000
+Player.filter(literal: "score > \(minScore)")
+
+Player.filter(sql: "score > ?", arguments: [minScore])
+```
+
+## Annotations
+
+Add calculated columns to your queries:
+
+```swift
+let request = Player.annotated(with: {
+    (Column("score") * 2).forKey("doubleScore")
+})
+
+for row in try Row.fetchAll(db, request) {
+    let score: Int = row["score"]
+    let doubled: Int = row["doubleScore"]
+}
+```
+
+## Common Table Expressions
+
+```swift
+let cte = CommonTableExpression(
+    named: "averageScore",
+    sql: "SELECT AVG(score) AS value FROM player"
+)
+
+let request = Player
+    .with(cte)
+    .filter(sql: "score > (SELECT value FROM averageScore)")
+```
+
+## Combining Requests
+
+### UNION
+
+```swift
+let request1 = Player.filter(Column("score") > 1000)
+let request2 = Player.filter(Column("isVIP") == true)
+let union = request1.union(request2)
+```
+
+## Request Operators
+
+### Chaining
+
+Chain multiple operations:
+
+```swift
+let request = Player
+    .filter(Column("active") == true)
+    .order(Column("score").desc)
+    .limit(10)
+```
+
+### Reversed
+
+```swift
+let request = Player
+    .order(Column("score").desc)
+    .reversed() // Changes to ASC
+```
+
+### Unordered
+
+```swift
+let request = Player
+    .order(Column("name"))
+    .unordered() // Removes ordering
+```
+
+## Type-Safe Queries with Key Paths
+
+When you define `DatabaseComponents`, you can use key paths:
+
+```swift
+struct Player: TableRecord {
+    enum Columns {
+        static let id = Column("id")
+        static let name = Column("name")
+        static let score = Column("score")
+    }
+}
+
+// Use key paths
+Player.filter { $0.score > 1000 }
+Player.order { $0.score.desc }
+Player.select { [$0.id, $0.name] }
+```
+
+## Executing Queries
+
+### Fetching Records
+
+```swift
+let players = try Player
+    .filter(Column("score") > 1000)
+    .fetchAll(db)
+```
+
+### Fetching Rows
+
+```swift
+let rows = try Row.fetchAll(db, Player.all())
+```
+
+### Fetching Values
+
+```swift
+let scores = try Int.fetchAll(db, Player.select(Column("score")))
+```
+
+### Counting
+
+```swift
+let count = try Player
+    .filter(Column("active") == true)
+    .fetchCount(db)
+```
+
+## Performance Considerations
+
+<Tip>
+The Query Interface compiles to efficient SQL. There's minimal overhead compared to writing raw SQL.
+</Tip>
+
+<Tip>
+Use indexes for columns in WHERE and JOIN conditions:
+
+```swift
+try db.create(index: "player_on_score", on: "player", columns: ["score"])
+```
+</Tip>
+
+<Warning>
+Avoid fetching all records without filters or limits on large tables. Use pagination:
+
+```swift
+let pageSize = 100
+let page = 2
+let players = try Player
+    .order(Column("id"))
+    .limit(pageSize, offset: (page - 1) * pageSize)
+    .fetchAll(db)
+```
+</Warning>
+
+## Related Topics
+
+- [`TableRecord`](/api/table-record) - Enabling query interface
+- [`associations`](/api/associations) - Joining tables
+- [`sql-interpolation`](/api/sql-interpolation) - SQL string interpolation
+
+## See Also
+
+- [Query Interface Guide](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/queryinterface)
+- [Associations Guide](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/associations)

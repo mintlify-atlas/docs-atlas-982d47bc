@@ -1,80 +1,347 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with GRDB in minutes by building your first SQLite database application
 ---
 
-## Get started in three steps
+This guide will walk you through creating your first GRDB application in four simple steps: opening a database connection, defining a schema, creating a record type, and reading/writing data.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Make sure you've [installed GRDB](/installation) in your project before continuing.
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+## Your First GRDB Application
+
+Let's build a simple player database that stores player names and scores.
+
+<Steps>
+  <Step title="Import GRDB and Open a Connection">
+    First, import GRDB and create a database connection. You can choose between `DatabaseQueue` or `DatabasePool`:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```swift
+    import GRDB
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    // Option 1: In-memory database (great for testing)
+    let dbQueue = try DatabaseQueue()
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    // Option 2: Persistent database file
+    let dbQueue = try DatabaseQueue(path: "/path/to/database.sqlite")
+    ```
+    
+    <Tip>
+      **DatabaseQueue vs DatabasePool**: Start with `DatabaseQueue` for simplicity. It supports in-memory databases and is easier to work with. You can always switch to `DatabasePool` later for concurrent access in multi-threaded applications.
+    </Tip>
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Define Your Database Schema">
+    Create a table to store your data:
+    
+    ```swift
+    try dbQueue.write { db in
+        try db.create(table: "player") { t in
+            t.primaryKey("id", .text)
+            t.column("name", .text).notNull()
+            t.column("score", .integer).notNull()
+        }
+    }
+    ```
+    
+    <Note>
+      GRDB provides a type-safe API for creating tables. Each column is defined with a name and type. Common SQLite types include `.text`, `.integer`, `.real`, and `.blob`.
+    </Note>
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Define a Record Type">
+    Create a Swift struct that represents a database row. GRDB works seamlessly with `Codable` types:
+    
+    ```swift
+    struct Player: Codable, Identifiable, FetchableRecord, PersistableRecord {
+        var id: String
+        var name: String
+        var score: Int
+        
+        // Optional: Define columns for use in queries
+        enum Columns {
+            static let name = Column(CodingKeys.name)
+            static let score = Column(CodingKeys.score)
+        }
+    }
+    ```
+    
+    **Protocol breakdown:**
+    - `Codable` - Enables automatic encoding/decoding
+    - `Identifiable` - Marks `id` as the primary key
+    - `FetchableRecord` - Enables fetching from database
+    - `PersistableRecord` - Enables saving to database
+    
+    <Tip>
+      The `Columns` enum is optional but recommended. It provides type-safe column references for the query interface.
+    </Tip>
+  </Step>
 
-### Step 3: Go live
+  <Step title="Insert and Query Data">
+    Now you can insert records and query them back:
+    
+    ```swift
+    // Insert records
+    try dbQueue.write { db in
+        try Player(id: "1", name: "Arthur", score: 100).insert(db)
+        try Player(id: "2", name: "Barbara", score: 1000).insert(db)
+    }
+    
+    // Query records
+    try dbQueue.read { db in
+        // Find a specific player
+        let player = try Player.find(db, id: "1")
+        print(player?.name ?? "Not found") // "Arthur"
+        
+        // Get top 10 players
+        let bestPlayers = try Player
+            .order(Player.Columns.score.desc)
+            .limit(10)
+            .fetchAll(db)
+        
+        for player in bestPlayers {
+            print("\(player.name): \(player.score)")
+        }
+        
+        // Count all players
+        let playerCount = try Player.fetchCount(db)
+        print("Total players: \(playerCount)")
+    }
+    ```
+  </Step>
+</Steps>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+## Complete Example
 
-## Next steps
+Here's the full working example you can copy and paste:
 
-Now that you have your docs running, explore these key features:
+```swift
+import GRDB
 
-<CardGroup cols={2}>
+// 1. Open a database connection
+let dbQueue = try DatabaseQueue(path: "/path/to/database.sqlite")
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+// 2. Define the database schema
+try dbQueue.write { db in
+    try db.create(table: "player") { t in
+        t.primaryKey("id", .text)
+        t.column("name", .text).notNull()
+        t.column("score", .integer).notNull()
+    }
+}
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+// 3. Define a record type
+struct Player: Codable, Identifiable, FetchableRecord, PersistableRecord {
+    var id: String
+    var name: String
+    var score: Int
+    
+    enum Columns {
+        static let name = Column(CodingKeys.name)
+        static let score = Column(CodingKeys.score)
+    }
+}
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+// 4. Write and read in the database
+try dbQueue.write { db in
+    try Player(id: "1", name: "Arthur", score: 100).insert(db)
+    try Player(id: "2", name: "Barbara", score: 1000).insert(db)
+}
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+try dbQueue.read { db in
+    let player = try Player.find(db, id: "1")
+    
+    let bestPlayers = try Player
+        .order(Player.Columns.score.desc)
+        .limit(10)
+        .fetchAll(db)
+}
+```
 
-</CardGroup>
+## Alternative: Using Raw SQL
+
+GRDB also provides direct SQL access if you prefer working with raw queries:
+
+<CodeGroup>
+
+```swift Create Table
+try dbQueue.write { db in
+    try db.execute(sql: """
+        CREATE TABLE player (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          score INT NOT NULL)
+        """)
+}
+```
+
+```swift Insert with Arguments
+try dbQueue.write { db in
+    try db.execute(
+        sql: "INSERT INTO player (id, name, score) VALUES (?, ?, ?)",
+        arguments: ["1", "Arthur", 100])
+}
+```
+
+```swift SQL Interpolation
+try dbQueue.write { db in
+    let id = "2"
+    let name = "O'Brien"
+    let score = 1000
+    
+    // Safe from SQL injection
+    try db.execute(literal: """
+        INSERT INTO player (id, name, score)
+        VALUES (\(id), \(name), \(score))
+        """)
+}
+```
+
+```swift Fetch Rows
+try dbQueue.read { db in
+    let rows = try Row.fetchCursor(db, sql: "SELECT * FROM player")
+    while let row = try rows.next() {
+        let id: String = row["id"]
+        let name: String = row["name"]
+        let score: Int = row["score"]
+        print("\(name): \(score)")
+    }
+}
+```
+
+```swift Fetch Values
+try dbQueue.read { db in
+    // Fetch a single value
+    let playerCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM player")!
+    
+    // Fetch an array of values
+    let playerNames = try String.fetchAll(db, sql: "SELECT name FROM player")
+}
+```
+
+</CodeGroup>
+
+## Understanding Read and Write Access
+
+GRDB enforces a clear distinction between reading and writing:
+
+<CodeGroup>
+
+```swift Writing
+// Use write blocks for INSERT, UPDATE, DELETE
+try dbQueue.write { db in
+    var player = Player(id: "1", name: "Arthur", score: 100)
+    try player.insert(db)
+    
+    // Update the score
+    player.score += 10
+    try player.update(db)
+    
+    // Delete a player
+    try player.delete(db)
+}
+```
+
+```swift Reading
+// Use read blocks for SELECT queries
+let players = try dbQueue.read { db in
+    try Player.fetchAll(db)
+}
+
+// Read blocks prevent accidental writes
+try dbQueue.read { db in
+    // This would throw an error:
+    // try player.insert(db) ❌
+}
+```
+
+</CodeGroup>
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  **Thread Safety**: GRDB handles all the complexity of multi-threaded database access. You can safely call `read` and `write` from any thread.
 </Note>
+
+## Common Operations
+
+Here are some common database operations you'll use frequently:
+
+### Update Records
+
+```swift
+try dbQueue.write { db in
+    var player = try Player.find(db, id: "1")!
+    player.score += 100
+    try player.update(db)
+    
+    // Or use updateChanges to only update modified fields
+    try player.updateChanges { $0.score += 100 }
+}
+```
+
+### Delete Records
+
+```swift
+try dbQueue.write { db in
+    // Delete a specific player
+    try Player.deleteOne(db, id: "1")
+    
+    // Delete all players with score < 50
+    try Player.filter { $0.score < 50 }.deleteAll(db)
+}
+```
+
+### Filter and Sort
+
+```swift
+try dbQueue.read { db in
+    // Find players named "Arthur"
+    let arthurs = try Player
+        .filter { $0.name == "Arthur" }
+        .fetchAll(db)
+    
+    // Top 5 players
+    let topPlayers = try Player
+        .order(Player.Columns.score.desc)
+        .limit(5)
+        .fetchAll(db)
+    
+    // Players with score > 500
+    let highScorers = try Player
+        .filter { $0.score > 500 }
+        .order(Player.Columns.name)
+        .fetchAll(db)
+}
+```
+
+## Error Handling
+
+All GRDB methods can throw errors. Make sure to handle them appropriately:
+
+```swift
+do {
+    try dbQueue.write { db in
+        try Player(id: "1", name: "Arthur", score: 100).insert(db)
+    }
+} catch let error as DatabaseError {
+    // Handle database-specific errors
+    print("Database error: \(error.message ?? "Unknown error")")
+} catch {
+    // Handle other errors
+    print("Error: \(error)")
+}
+```
+
+## Next Steps
+
+Now that you've built your first GRDB application, explore these topics:
+
+- **[Database Connections](/database-connections)** - Learn about `DatabaseQueue` vs `DatabasePool` and connection options
+- **[Records](/records)** - Deep dive into the record protocols and persistence methods
+- **[Query Interface](/query-interface)** - Master the type-safe query builder
+- **[Migrations](/migrations)** - Learn how to evolve your database schema over time
+- **[Database Observation](/database-observation)** - Get notified when data changes
+
+<Tip>
+  Check out the [Demo Applications](https://github.com/groue/GRDB.swift/tree/master/Documentation/DemoApps) for complete example projects showing GRDB in real-world scenarios.
+</Tip>

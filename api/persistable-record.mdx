@@ -1,0 +1,391 @@
+---
+title: "PersistableRecord"
+description: "Protocol for types that can be persisted to the database"
+---
+
+`PersistableRecord` is a protocol for types that can insert, update, and save themselves to the database.
+
+## Overview
+
+Conform to `PersistableRecord` to persist your custom types:
+
+```swift
+struct Player: PersistableRecord, Encodable {
+    var id: Int64?
+    var name: String
+    var score: Int
+}
+
+try dbQueue.write { db in
+    var player = Player(id: nil, name: "Arthur", score: 100)
+    try player.insert(db)
+    print(player.id) // Auto-incremented ID
+}
+```
+
+<Tip>
+Encodable types get automatic PersistableRecord conformance with minimal setup.
+</Tip>
+
+## Conforming to PersistableRecord
+
+### Encodable Conformance
+
+Encodable types automatically conform:
+
+```swift
+struct Player: PersistableRecord, Encodable {
+    var id: Int64?
+    var name: String
+    var score: Int
+}
+```
+
+### Manual Conformance
+
+Implement the `encode(to:)` method:
+
+```swift
+struct Player: PersistableRecord {
+    var id: Int64?
+    var name: String
+    var score: Int
+    
+    func encode(to container: inout PersistenceContainer) {
+        container["id"] = id
+        container["name"] = name
+        container["score"] = score
+    }
+}
+```
+
+## Configuring the Table
+
+Combine with [`TableRecord`](/api/table-record) to specify the table name:
+
+```swift
+struct Player: PersistableRecord, TableRecord, Encodable {
+    static let databaseTableName = "player"
+    
+    var id: Int64?
+    var name: String
+    var score: Int
+}
+```
+
+## Inserting Records
+
+### insert(_:onConflict:)
+
+Inserts a record into the database.
+
+<ParamField path="db" type="Database" required>
+  A database connection
+</ParamField>
+
+<ParamField path="onConflict" type="Database.ConflictResolution?" default="nil">
+  Conflict resolution strategy
+</ParamField>
+
+```swift
+var player = Player(id: nil, name: "Arthur", score: 100)
+try player.insert(db)
+
+// Insert with conflict resolution
+try player.insert(db, onConflict: .ignore)
+```
+
+<Note>
+For structs, `insert` is mutating and updates the `id` property with the auto-incremented value.
+</Note>
+
+### insertAndFetch(_:onConflict:as:)
+
+Inserts a record and fetches the inserted row.
+
+```swift
+var player = Player(id: nil, name: "Arthur", score: 100)
+let inserted = try player.insertAndFetch(db)
+print(inserted.id) // Auto-incremented ID
+```
+
+## Updating Records
+
+### update(_:onConflict:)
+
+Updates a record in the database.
+
+```swift
+var player = Player(id: 1, name: "Arthur", score: 100)
+player.score = 150
+try player.update(db)
+```
+
+<Warning>
+Throws a `RecordError.recordNotFound` error if the record doesn't exist in the database.
+</Warning>
+
+### update(_:onConflict:columns:)
+
+Updates specific columns only.
+
+```swift
+var player = Player(id: 1, name: "Arthur", score: 150)
+try player.update(db, columns: ["score"])
+// Only score is updated, name is unchanged in database
+```
+
+## Saving Records
+
+### save(_:onConflict:)
+
+Inserts or updates a record depending on whether it exists.
+
+```swift
+var player = Player(id: nil, name: "Arthur", score: 100)
+try player.save(db) // Inserts
+
+player.score = 150
+try player.save(db) // Updates
+```
+
+### saveAndFetch(_:onConflict:as:)
+
+Saves a record and fetches the saved row.
+
+```swift
+var player = Player(id: nil, name: "Arthur", score: 100)
+let saved = try player.saveAndFetch(db)
+print(saved.id)
+```
+
+## Upserting Records
+
+### upsert(_:)
+
+Inserts or updates using SQLite's UPSERT (INSERT ... ON CONFLICT DO UPDATE).
+
+```swift
+let player = Player(id: 1, name: "Arthur", score: 100)
+try player.upsert(db)
+```
+
+<Note>
+Requires SQLite 3.24.0+ and a conflict target (usually a primary key or unique constraint).
+</Note>
+
+### upsertAndFetch(_:onConflict:updating:doUpdate:)
+
+Upserts and fetches the result.
+
+```swift
+let player = Player(id: 1, name: "Arthur", score: 100)
+let upserted = try player.upsertAndFetch(db)
+```
+
+## Deleting Records
+
+### delete(_:)
+
+Deletes a record from the database.
+
+```swift
+let player = Player(id: 1, name: "Arthur", score: 100)
+let deleted = try player.delete(db)
+print(deleted) // true if deleted, false if not found
+```
+
+## Persistence Callbacks
+
+### willInsert(_:)
+
+Called before the record is inserted.
+
+```swift
+struct Player: PersistableRecord {
+    var id: Int64?
+    var name: String
+    var createdAt: Date
+    
+    func willInsert(_ db: Database) throws {
+        // Set createdAt before insertion
+        createdAt = Date()
+    }
+}
+```
+
+### didInsert(_:)
+
+Called after successful insertion.
+
+<ParamField path="inserted" type="InsertionSuccess" required>
+  Contains information about the inserted row
+</ParamField>
+
+```swift
+struct Player: PersistableRecord {
+    var id: Int64?
+    var name: String
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+```
+
+### willUpdate(_:columns:)
+
+Called before the record is updated.
+
+```swift
+struct Player: PersistableRecord {
+    var id: Int64
+    var name: String
+    var updatedAt: Date
+    
+    func willUpdate(_ db: Database, columns: Set<String>) throws {
+        updatedAt = Date()
+    }
+}
+```
+
+### didUpdate(_:)
+
+Called after successful update.
+
+```swift
+func didUpdate(_ updated: UpdateSuccess) {
+    print("Updated \(updated.changesCount) columns")
+}
+```
+
+### willSave(_:)
+
+Called before save (insert or update).
+
+```swift
+func willSave(_ db: Database) throws {
+    // Validation logic
+    guard !name.isEmpty else {
+        throw ValidationError.emptyName
+    }
+}
+```
+
+### didSave(_:)
+
+Called after successful save.
+
+```swift
+func didSave(_ saved: SaveSuccess) {
+    print("Saved with \(saved.changesCount) changes")
+}
+```
+
+### willDelete(_:)
+
+Called before deletion.
+
+```swift
+func willDelete(_ db: Database) throws {
+    // Clean up related data
+}
+```
+
+### didDelete(_:)
+
+Called after successful deletion.
+
+```swift
+func didDelete(_ deleted: DeletionSuccess) {
+    print("Deleted: \(deleted.deleted)")
+}
+```
+
+## Conflict Resolution
+
+```swift
+try player.insert(db, onConflict: .ignore)    // INSERT OR IGNORE
+try player.insert(db, onConflict: .replace)   // INSERT OR REPLACE
+try player.update(db, onConflict: .rollback)  // UPDATE OR ROLLBACK
+try player.update(db, onConflict: .abort)     // UPDATE OR ABORT
+try player.update(db, onConflict: .fail)      // UPDATE OR FAIL
+```
+
+## Customizing Encodable Encoding
+
+### Column Name Encoding
+
+```swift
+struct Player: PersistableRecord, Encodable {
+    static let databaseColumnEncodingStrategy = DatabaseColumnEncodingStrategy.convertToSnakeCase
+    
+    var playerID: Int64  // Encoded to player_id
+    var fullName: String // Encoded to full_name
+}
+```
+
+### Date Encoding
+
+```swift
+struct Player: PersistableRecord, Encodable {
+    static func databaseDateEncodingStrategy(for column: String) -> DatabaseDateEncodingStrategy {
+        .timeIntervalSince1970
+    }
+    
+    var createdAt: Date // Stored as epoch timestamp
+}
+```
+
+### Data Encoding
+
+```swift
+struct Player: PersistableRecord, Encodable {
+    static func databaseDataEncodingStrategy(for column: String) -> DatabaseDataEncodingStrategy {
+        .deferredToData
+    }
+    
+    var avatarData: Data
+}
+```
+
+### JSON Encoding
+
+```swift
+struct Player: PersistableRecord, Encodable {
+    static func databaseJSONEncoder(for column: String) -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }
+    
+    var metadata: Metadata // Encoded as JSON
+}
+```
+
+## Batch Operations
+
+Combine with TableRecord for batch operations:
+
+```swift
+// Delete all players with score < 100
+try Player.filter(Column("score") < 100).deleteAll(db)
+
+// Update all players
+try Player.updateAll(db) { player in
+    [player.score.set(to: 0)]
+}
+```
+
+## Related Protocols
+
+- [`FetchableRecord`](/api/fetchable-record) - Fetching records from database
+- [`TableRecord`](/api/table-record) - Query interface support
+- [`MutablePersistableRecord`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/mutablepersistablerecord) - Base protocol with mutating methods
+- [`EncodableRecord`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/encodablerecord) - Encoding records
+
+## See Also
+
+- [Records Documentation](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/records)
+- [Persistence Callbacks](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/persistencecallbacks)
+- [Query Interface](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/queryinterface)

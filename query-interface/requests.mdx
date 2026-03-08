@@ -1,0 +1,524 @@
+---
+title: Building and Executing Requests
+description: Learn how to build, refine, and execute database queries with GRDB
+---
+
+A **request** is a description of a database query. Requests are built using Swift methods, then executed to fetch data from the database.
+
+## Creating Base Requests
+
+All requests start from a record type that conforms to `TableRecord`:
+
+```swift
+struct Player: TableRecord {
+    static let databaseTableName = "player"
+    var id: Int64
+    var name: String
+    var score: Int
+}
+
+// Request all players
+let request = Player.all()
+
+// Empty request (fetches nothing)
+let empty = Player.none()
+```
+
+<Note>
+`Player.all()` returns a `QueryInterfaceRequest<Player>` - a request that fetches `Player` records.
+</Note>
+
+## Filtering Records
+
+Use the `filter` method to add WHERE clauses:
+
+### Basic Filters
+
+```swift
+// Single condition
+Player.filter { $0.score > 1000 }
+// SELECT * FROM player WHERE score > 1000
+
+// Multiple conditions with AND
+Player.filter { $0.score > 1000 && $0.name != nil }
+// SELECT * FROM player WHERE (score > 1000) AND (name IS NOT NULL)
+
+// Multiple conditions with OR
+Player.filter { $0.score > 1000 || $0.score < 0 }
+// SELECT * FROM player WHERE (score > 1000) OR (score < 0)
+```
+
+### Filter by Primary Key
+
+```swift
+// Single ID
+Player.filter(id: 42)
+// SELECT * FROM player WHERE id = 42
+
+// Multiple IDs
+Player.filter(ids: [1, 2, 3])
+// SELECT * FROM player WHERE id IN (1, 2, 3)
+
+// Compound primary key
+CountryInfo.filter(key: ["code": "FR"])
+```
+
+### Filter by Column Value
+
+```swift
+// Using Column directly
+Player.filter(Column("name") == "Arthur")
+
+// Using KeyPath
+Player.filter(\.$name == "Arthur")
+
+// Using coding keys
+Player.filter(Player.Columns.name == "Arthur")
+```
+
+### Comparison Operators
+
+```swift
+// Equality
+Player.filter { $0.name == "Arthur" }
+
+// Inequality
+Player.filter { $0.name != "Arthur" }
+
+// Comparisons
+Player.filter { $0.score > 1000 }
+Player.filter { $0.score >= 1000 }
+Player.filter { $0.score < 1000 }
+Player.filter { $0.score <= 1000 }
+
+// Ranges
+Player.filter((100...1000).contains($0.score))
+// SELECT * FROM player WHERE score BETWEEN 100 AND 1000
+
+// NULL checks
+Player.filter { $0.email == nil }
+// SELECT * FROM player WHERE email IS NULL
+
+Player.filter { $0.email != nil }
+// SELECT * FROM player WHERE email IS NOT NULL
+```
+
+### String Matching
+
+```swift
+// LIKE operator
+Player.filter(Column("name").like("Art%"))
+// SELECT * FROM player WHERE name LIKE 'Art%'
+
+// Case-insensitive search
+Player.filter(Column("email").collating(.nocase) == "arthur@example.com")
+
+// Pattern matching
+Player.filter(Column("name").glob("Art*"))
+```
+
+### IN Operator
+
+```swift
+// IN with array
+let names = ["Arthur", "Barbara"]
+Player.filter(names.contains($0.name))
+// SELECT * FROM player WHERE name IN ('Arthur', 'Barbara')
+
+// NOT IN
+Player.filter(!names.contains($0.name))
+// SELECT * FROM player WHERE name NOT IN ('Arthur', 'Barbara')
+
+// IN with subquery
+let subquery = Team.select(Column("name"))
+Player.filter(subquery.contains($0.teamName))
+```
+
+### Chaining Filters
+
+Filters can be chained together (they combine with AND):
+
+```swift
+let request = Player.all()
+    .filter { $0.score > 1000 }
+    .filter { $0.name != nil }
+    .filter { $0.createdAt > Date().addingTimeInterval(-86400) }
+// SELECT * FROM player 
+// WHERE (score > 1000) 
+//   AND (name IS NOT NULL) 
+//   AND (createdAt > ?)
+```
+
+## Ordering Results
+
+Use the `order` method to add ORDER BY clauses:
+
+```swift
+// Single column, ascending
+Player.order(\.$score)
+// SELECT * FROM player ORDER BY score
+
+// Single column, descending
+Player.order(\.$score.desc)
+// SELECT * FROM player ORDER BY score DESC
+
+// Multiple columns
+Player.order(\.$score.desc, \.$name)
+// SELECT * FROM player ORDER BY score DESC, name
+```
+
+### Collations
+
+Specify how strings are compared:
+
+```swift
+// Case-insensitive
+Player.order(\.$name.collating(.nocase))
+
+// Localized comparison
+Player.order(\.$name.collating(.localizedCaseInsensitiveCompare))
+
+// Custom collation
+Player.order(\.$name.collating(.custom("UNICODE")))
+```
+
+### Reversing Order
+
+```swift
+// Reverse entire ordering
+let ascending = Player.order(\.$score)
+let descending = ascending.reversed()
+// SELECT * FROM player ORDER BY score DESC
+```
+
+## Limiting Results
+
+Control how many records are returned:
+
+```swift
+// First 10 records
+Player.limit(10)
+// SELECT * FROM player LIMIT 10
+
+// Pagination with offset
+Player.limit(10, offset: 20)
+// SELECT * FROM player LIMIT 10 OFFSET 20
+
+// Remove limit
+let unlimited = Player.limit(10).unordered()
+```
+
+## Selecting Columns
+
+Choose which columns to retrieve:
+
+### Select All Columns
+
+```swift
+// Default: all columns
+Player.all()
+// SELECT * FROM player
+```
+
+### Select Specific Columns
+
+```swift
+// Multiple columns
+Player.select(\.$name, \.$score)
+// SELECT name, score FROM player
+
+// Using Column
+Player.select(Column("name"), Column("score"))
+
+// Mix columns and expressions
+Player.select(\.$name, (\.$score * 2).forKey("doubleScore"))
+```
+
+### Select Single Column
+
+Fetch a simple type instead of a record:
+
+<CodeGroup>
+```swift Fetch Strings
+let names = try Player
+    .select(\.$name, as: String.self)
+    .fetchAll(db) // [String]
+```
+
+```swift Fetch Integers
+let scores = try Player
+    .select(\.$score, as: Int.self)
+    .fetchAll(db) // [Int]
+```
+
+```swift Optional Values
+let emails = try Player
+    .select(\.$email, as: String?.self)
+    .fetchAll(db) // [String?]
+```
+</CodeGroup>
+
+### Computed Columns
+
+```swift
+// Arithmetic
+Player.select((\.$score + \.$bonus).forKey("total"))
+
+// String concatenation
+Player.select(
+    (Column("firstName") + " " + Column("lastName")).forKey("fullName")
+)
+
+// Conditional expressions
+Player.select(
+    (\.$score > 1000).forKey("isExpert")
+)
+```
+
+### Aggregate Functions
+
+```swift
+// COUNT
+let count = try Player.fetchCount(db)
+
+// MAX
+Player.select(max(\.$score), as: Int.self)
+
+// MIN
+Player.select(min(\.$score), as: Int.self)
+
+// AVG
+Player.select(average(\.$score), as: Double.self)
+
+// SUM
+Player.select(sum(\.$score), as: Int.self)
+```
+
+## Grouping Results
+
+Group records with GROUP BY:
+
+```swift
+// Group by single column
+Player.group(\.$teamId)
+// SELECT * FROM player GROUP BY teamId
+
+// Group by multiple columns
+Player.group(\.$teamId, \.$country)
+// SELECT * FROM player GROUP BY teamId, country
+
+// With aggregate
+Player
+    .select(\.$teamId, count(Column("*")).forKey("count"))
+    .group(\.$teamId)
+// SELECT teamId, COUNT(*) AS count FROM player GROUP BY teamId
+```
+
+### Having Clause
+
+Filter grouped results:
+
+```swift
+Player
+    .select(\.$teamId, count(Column("*")).forKey("count"))
+    .group(\.$teamId)
+    .having(count(Column("*")) > 5)
+// SELECT teamId, COUNT(*) AS count 
+// FROM player 
+// GROUP BY teamId 
+// HAVING COUNT(*) > 5
+```
+
+## Distinct Results
+
+Remove duplicate rows:
+
+```swift
+// Distinct rows
+Player.select(\.$country).distinct()
+// SELECT DISTINCT country FROM player
+
+// Distinct on expression
+Player.select((\.$firstName + " " + \.$lastName).forKey("name")).distinct()
+```
+
+## Fetching Results
+
+Execute requests to fetch data from the database:
+
+### Fetch All Records
+
+```swift
+try dbQueue.read { db in
+    let players = try Player
+        .filter { $0.score > 1000 }
+        .fetchAll(db) // [Player]
+}
+```
+
+### Fetch One Record
+
+```swift
+try dbQueue.read { db in
+    // Returns first match or nil
+    let player = try Player
+        .filter(id: 42)
+        .fetchOne(db) // Player?
+}
+```
+
+### Fetch Set
+
+```swift
+try dbQueue.read { db in
+    let players = try Player
+        .filter { $0.score > 1000 }
+        .fetchSet(db) // Set<Player>
+}
+```
+
+### Fetch Cursor
+
+Memory-efficient iteration over large result sets:
+
+```swift
+try dbQueue.read { db in
+    let cursor = try Player
+        .order(\.$score.desc)
+        .fetchCursor(db)
+    
+    while let player = try cursor.next() {
+        print("\(player.name): \(player.score)")
+    }
+}
+```
+
+<Warning>
+Cursors must be consumed within the database access block. They become invalid once the block exits.
+</Warning>
+
+### Fetch Count
+
+```swift
+try dbQueue.read { db in
+    let count = try Player
+        .filter { $0.score > 1000 }
+        .fetchCount(db) // Int
+}
+```
+
+### Check Existence
+
+```swift
+try dbQueue.read { db in
+    let exists = try Player
+        .filter(id: 42)
+        .isEmpty(db) // Bool
+}
+```
+
+## Advanced Techniques
+
+### Reusable Request Methods
+
+Define requests as static methods:
+
+```swift
+extension Player {
+    static func topScorers(limit: Int = 10) -> QueryInterfaceRequest<Player> {
+        Player
+            .filter { $0.score > 0 }
+            .order(\.$score.desc)
+            .limit(limit)
+    }
+    
+    static func inTeam(_ teamId: Int64) -> QueryInterfaceRequest<Player> {
+        Player.filter { $0.teamId == teamId }
+    }
+}
+
+// Usage
+let topPlayers = try Player.topScorers().fetchAll(db)
+let teamPlayers = try Player.inTeam(5).fetchAll(db)
+
+// Compose requests
+let topTeamPlayers = try Player
+    .inTeam(5)
+    .order(\.$score.desc)
+    .limit(10)
+    .fetchAll(db)
+```
+
+### Request Composition
+
+```swift
+func applyDefaultFilters(_ request: QueryInterfaceRequest<Player>) 
+    -> QueryInterfaceRequest<Player> 
+{
+    request
+        .filter { $0.isActive == true }
+        .filter { $0.deletedAt == nil }
+}
+
+let activeTopScorers = applyDefaultFilters(Player.all())
+    .order(\.$score.desc)
+    .limit(10)
+```
+
+### Conditional Queries
+
+```swift
+func searchPlayers(name: String?, minScore: Int?) -> QueryInterfaceRequest<Player> {
+    var request = Player.all()
+    
+    if let name = name {
+        request = request.filter { $0.name.like("%\(name)%") }
+    }
+    
+    if let minScore = minScore {
+        request = request.filter { $0.score >= minScore }
+    }
+    
+    return request.order(\.$score.desc)
+}
+
+// Usage
+try searchPlayers(name: "Art", minScore: 1000).fetchAll(db)
+try searchPlayers(name: nil, minScore: 500).fetchAll(db)
+```
+
+## Batch Operations
+
+### Update All
+
+```swift
+try dbQueue.write { db in
+    try Player
+        .filter { $0.score < 0 }
+        .updateAll(db, \.$score.set(to: 0))
+    // UPDATE player SET score = 0 WHERE score < 0
+}
+```
+
+### Delete All
+
+```swift
+try dbQueue.write { db in
+    try Player
+        .filter { $0.deletedAt != nil }
+        .deleteAll(db)
+    // DELETE FROM player WHERE deletedAt IS NOT NULL
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Associations" href="/query-interface/associations" icon="link">
+    Define relationships between records
+  </Card>
+  
+  <Card title="SQL Interpolation" href="/query-interface/sql-interpolation" icon="brackets-curly">
+    Mix raw SQL with type-safe queries
+  </Card>
+</CardGroup>

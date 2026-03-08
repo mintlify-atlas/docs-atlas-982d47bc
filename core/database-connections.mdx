@@ -1,0 +1,299 @@
+---
+title: Database Connections
+description: Learn about DatabaseQueue and DatabasePool for connecting to SQLite databases
+---
+
+GRDB provides two classes for accessing SQLite databases: `DatabaseQueue` and `DatabasePool`.
+
+## Opening Connections
+
+<Tabs>
+  <Tab title="DatabaseQueue">
+    ```swift
+    import GRDB
+
+    // Open a database file
+    let dbQueue = try DatabaseQueue(path: "/path/to/database.sqlite")
+
+    // Or create an in-memory database
+    let dbQueue = try DatabaseQueue()
+    ```
+  </Tab>
+  <Tab title="DatabasePool">
+    ```swift
+    import GRDB
+
+    // Open a database file
+    let dbPool = try DatabasePool(path: "/path/to/database.sqlite")
+    ```
+    
+    <Note>
+      DatabasePool cannot create in-memory databases. Use DatabaseQueue for in-memory databases.
+    </Note>
+  </Tab>
+</Tabs>
+
+## DatabaseQueue vs DatabasePool
+
+Choose the right connection type for your needs:
+
+| Feature | DatabaseQueue | DatabasePool |
+|---------|--------------|-------------|
+| **Concurrent reads** | ❌ No | ✅ Yes |
+| **WAL mode** | Optional | Always (unless read-only) |
+| **In-memory databases** | ✅ Yes | ❌ No |
+| **Thread safety** | ✅ Yes | ✅ Yes |
+| **Memory usage** | Lower | Higher |
+
+<Note>
+  **If you are not sure, choose DatabaseQueue.** You can always switch to DatabasePool later when you need concurrent read access.
+</Note>
+
+## DatabaseQueue
+
+`DatabaseQueue` provides a single serialized database connection:
+
+```swift
+public final class DatabaseQueue {
+    public init(path: String, configuration: Configuration = Configuration()) throws
+    public init(named name: String? = nil, configuration: Configuration = Configuration()) throws
+}
+```
+
+### Reading from DatabaseQueue
+
+```swift
+try dbQueue.read { db in
+    let count = try Player.fetchCount(db)
+    let players = try Player.fetchAll(db)
+    return players
+}
+```
+
+### Writing to DatabaseQueue
+
+```swift
+try dbQueue.write { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    try Player(name: "Barbara", score: 1000).insert(db)
+}
+```
+
+### In-Memory Databases
+
+DatabaseQueue supports in-memory databases:
+
+<CodeGroup>
+```swift Independent
+// Each connection gets its own independent database
+let dbQueue = try DatabaseQueue()
+```
+
+```swift Shared
+// Multiple connections can share the same in-memory database
+let dbQueue = try DatabaseQueue(named: "myDatabase")
+```
+</CodeGroup>
+
+## DatabasePool
+
+`DatabasePool` manages a pool of database connections for concurrent reads:
+
+```swift
+public final class DatabasePool {
+    public init(path: String, configuration: Configuration = Configuration()) throws
+}
+```
+
+### Key Features
+
+- **Concurrent Reads**: Multiple threads can read simultaneously
+- **WAL Mode**: Automatically enables [Write-Ahead Logging](https://www.sqlite.org/wal.html)
+- **Single Writer**: Writes are serialized
+- **Snapshot Isolation**: Readers see a consistent snapshot
+
+### Reading from DatabasePool
+
+```swift
+// Concurrent reads are isolated from writes
+try dbPool.read { db in
+    let players = try Player.fetchAll(db)
+    return players
+}
+```
+
+### Writing to DatabasePool
+
+Writes are serialized through a single writer connection:
+
+```swift
+try dbPool.write { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+}
+```
+
+### Async Concurrent Reads
+
+DatabasePool provides snapshot isolation for concurrent reads:
+
+```swift
+try dbPool.writeWithoutTransaction { db in
+    try Player.deleteAll(db)
+    
+    // Read concurrently with guaranteed snapshot isolation
+    dbPool.asyncConcurrentRead { dbResult in
+        do {
+            let db = try dbResult.get()
+            // Guaranteed to see zero players
+            let count = try Player.fetchCount(db)
+        } catch {
+            // Handle error
+        }
+    }
+    
+    try Player(name: "Arthur", score: 100).insert(db)
+}
+```
+
+## Configuration Options
+
+Both connection types accept a `Configuration` object:
+
+```swift
+var config = Configuration()
+config.readonly = true
+config.foreignKeysEnabled = true
+config.label = "MyDatabase"
+
+let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+```
+
+### Common Configuration Options
+
+<Tabs>
+  <Tab title="Read-Only">
+    ```swift
+    var config = Configuration()
+    config.readonly = true
+    let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+    ```
+  </Tab>
+  <Tab title="Foreign Keys">
+    ```swift
+    var config = Configuration()
+    config.foreignKeysEnabled = true
+    let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+    ```
+  </Tab>
+  <Tab title="Prepare Database">
+    ```swift
+    var config = Configuration()
+    config.prepareDatabase { db in
+        // Called when each connection opens
+        try db.execute(sql: "PRAGMA journal_size_limit = 10000000")
+    }
+    let dbPool = try DatabasePool(path: dbPath, configuration: config)
+    ```
+  </Tab>
+</Tabs>
+
+## Memory Management
+
+Both connection types provide memory management methods:
+
+```swift
+// Release as much memory as possible (blocks current thread)
+dbQueue.releaseMemory()
+dbPool.releaseMemory()
+
+// DatabasePool also provides an async version
+dbPool.releaseMemoryEventually()
+```
+
+<Note>
+  On iOS, GRDB automatically releases memory when the app receives memory warnings or enters the background.
+</Note>
+
+## Closing Connections
+
+Connections are automatically closed when deallocated, but you can explicitly close them:
+
+```swift
+try dbQueue.close()
+try dbPool.close()
+```
+
+<Warning>
+  After closing, the connection cannot be reopened. Any database access will throw an error.
+</Warning>
+
+## Thread Safety
+
+Both DatabaseQueue and DatabasePool are thread-safe:
+
+- **DatabaseQueue**: Serializes all database access on a single dispatch queue
+- **DatabasePool**: Allows concurrent reads on multiple connections, writes on a single connection
+
+```swift
+// Safe to call from any thread
+DispatchQueue.global().async {
+    try? dbQueue.read { db in
+        // Read from database
+    }
+}
+
+DispatchQueue.global().async {
+    try? dbQueue.write { db in
+        // Write to database
+    }
+}
+```
+
+## Best Practices
+
+<Tabs>
+  <Tab title="Choose Queue First">
+    Start with DatabaseQueue for simplicity, then upgrade to DatabasePool if you need concurrent reads.
+  </Tab>
+  <Tab title="Singleton Pattern">
+    ```swift
+    final class AppDatabase {
+        static let shared = AppDatabase()
+        let dbQueue: DatabaseQueue
+        
+        private init() {
+            let dbPath = try! FileManager.default
+                .url(for: .applicationSupportDirectory, 
+                     in: .userDomainMask,
+                     appropriateFor: nil, 
+                     create: true)
+                .appendingPathComponent("db.sqlite")
+                .path
+            dbQueue = try! DatabaseQueue(path: dbPath)
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="Error Handling">
+    ```swift
+    enum DatabaseError: Error {
+        case connectionFailed
+        case queryFailed(Error)
+    }
+    
+    func openDatabase() throws -> DatabaseQueue {
+        do {
+            return try DatabaseQueue(path: dbPath)
+        } catch {
+            throw DatabaseError.connectionFailed
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Next Steps
+
+- [Executing Updates](/core/executing-updates) - Learn how to INSERT, UPDATE, and DELETE data
+- [Fetch Queries](/core/fetch-queries) - Learn how to query and retrieve data
+- [Transactions](/core/transactions) - Learn about transactions and savepoints

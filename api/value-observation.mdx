@@ -1,0 +1,475 @@
+---
+title: "ValueObservation"
+description: "Observe database changes and get notified with fresh values"
+---
+
+`ValueObservation` tracks database changes and notifies your app with fresh values whenever the database changes.
+
+## Overview
+
+Create observations that automatically fetch fresh values when relevant database changes occur:
+
+```swift
+let observation = ValueObservation.tracking { db in
+    try Player.fetchAll(db)
+}
+
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { error in print("Error: \(error)") },
+    onChange: { players in print("Players: \(players)") }
+)
+```
+
+<Tip>
+ValueObservation is perfect for keeping your UI in sync with the database.
+</Tip>
+
+## Creating Observations
+
+### tracking(_:)
+
+Creates an observation that tracks database changes:
+
+<ParamField path="fetch" type="(Database) throws -> Value" required>
+  A closure that fetches the observed value
+</ParamField>
+
+```swift
+let observation = ValueObservation.tracking { db in
+    try Player.fetchAll(db)
+}
+```
+
+The observation automatically detects which database tables and columns are accessed, and only notifies when those change.
+
+### trackingConstantRegion(_:)
+
+Creates an optimized observation for a constant database region:
+
+```swift
+let observation = ValueObservation.trackingConstantRegion { db in
+    try Player.fetchAll(db)
+}
+```
+
+<Note>
+Use this when your query always accesses the same tables and columns. Provides better scheduling and performance.
+</Note>
+
+### tracking(regions:fetch:)
+
+Explicitly specifies which database regions to observe:
+
+```swift
+let observation = ValueObservation.tracking(
+    regions: [Player.all(), Team.all()]
+) { db in
+    // Fetch custom value
+    let players = try Player.fetchAll(db)
+    let teams = try Team.fetchAll(db)
+    return (players, teams)
+}
+```
+
+## Starting Observations
+
+### start(in:scheduling:onError:onChange:)
+
+Starts observing the database.
+
+<ParamField path="reader" type="DatabaseReader" required>
+  The database queue or pool
+</ParamField>
+
+<ParamField path="scheduler" type="ValueObservationScheduler" default=".async(onQueue: .main)">
+  Where to deliver values
+</ParamField>
+
+<ParamField path="onError" type="(Error) -> Void" required>
+  Error handler
+</ParamField>
+
+<ParamField path="onChange" type="(Value) -> Void" required>
+  Value handler
+</ParamField>
+
+```swift
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { error in
+        print("Database error: \(error)")
+    },
+    onChange: { players in
+        print("Fresh players: \(players)")
+    }
+)
+```
+
+### Scheduling Options
+
+#### Main Actor
+
+```swift
+// Deliver on main actor (async)
+let cancellable = observation.start(
+    in: dbQueue,
+    scheduling: .mainActor, // or just omit for default
+    onError: { error in },
+    onChange: { players in }
+)
+
+// Deliver on main actor (immediate first value)
+let cancellable = observation.start(
+    in: dbQueue,
+    scheduling: .immediate,
+    onError: { error in },
+    onChange: { players in }
+)
+```
+
+#### Custom Queue
+
+```swift
+let queue = DispatchQueue(label: "player.updates")
+let cancellable = observation.start(
+    in: dbQueue,
+    scheduling: .async(onQueue: queue),
+    onError: { error in },
+    onChange: { players in }
+)
+```
+
+#### Task
+
+```swift
+let cancellable = observation.start(
+    in: dbQueue,
+    scheduling: .task,
+    onError: { error in },
+    onChange: { players in }
+)
+```
+
+## Async/Await Support
+
+### values(in:scheduling:)
+
+Returns an async sequence of observed values:
+
+```swift
+for try await players in observation.values(in: dbQueue) {
+    print("Fresh players: \(players)")
+}
+```
+
+## Combine Support
+
+### publisher(in:scheduling:)
+
+Returns a Combine publisher:
+
+```swift
+import Combine
+
+let cancellable = observation
+    .publisher(in: dbQueue)
+    .sink(
+        receiveCompletion: { completion in
+            // Handle completion
+        },
+        receiveValue: { players in
+            print("Fresh players: \(players)")
+        }
+    )
+```
+
+## Transforming Observations
+
+### map(_:)
+
+Transforms observed values:
+
+```swift
+let observation = ValueObservation
+    .tracking { db in try Player.fetchAll(db) }
+    .map { players in players.count }
+
+// Notifies with Int instead of [Player]
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { _ in },
+    onChange: { count in
+        print("Player count: \(count)")
+    }
+)
+```
+
+### removeDuplicates()
+
+Only notifies when values change:
+
+```swift
+let observation = ValueObservation
+    .tracking { db in try Player.fetchCount(db) }
+    .removeDuplicates()
+
+// Only notifies when count actually changes
+```
+
+### removeDuplicates(by:)
+
+Custom duplicate detection:
+
+```swift
+struct PlayerStats {
+    var count: Int
+    var totalScore: Int
+}
+
+let observation = ValueObservation
+    .tracking { db in
+        PlayerStats(
+            count: try Player.fetchCount(db),
+            totalScore: try Player.select(sum(Column("score"))).fetchOne(db) ?? 0
+        )
+    }
+    .removeDuplicates { $0.count == $1.count }
+```
+
+## Observing Complex Queries
+
+### Multiple Tables
+
+```swift
+struct GameData {
+    var players: [Player]
+    var teams: [Team]
+}
+
+let observation = ValueObservation.tracking { db in
+    GameData(
+        players: try Player.fetchAll(db),
+        teams: try Team.fetchAll(db)
+    )
+}
+```
+
+### Aggregates
+
+```swift
+let observation = ValueObservation.tracking { db in
+    try Player.select(max(Column("score")), as: Int.self).fetchOne(db)
+}
+```
+
+### Joins
+
+```swift
+struct PlayerWithTeam {
+    var player: Player
+    var team: Team
+}
+
+let observation = ValueObservation.tracking { db in
+    let request = Player.including(required: Player.team)
+    return try PlayerWithTeam.fetchAll(db, request)
+}
+```
+
+## Performance Optimization
+
+### Constant Regions
+
+Use `trackingConstantRegion` when the observed database region never changes:
+
+```swift
+// Always observes the same row
+let observation = ValueObservation.trackingConstantRegion { db in
+    try Player.fetchOne(db, key: 42)
+}
+```
+
+<Tip>
+Constant region observations can reduce database contention and avoid fetching from the main thread in DatabasePool.
+</Tip>
+
+### Manual Region Specification
+
+Explicitly declare observed regions to enable optimizations:
+
+```swift
+let observation = ValueObservation.tracking(
+    regions: [Player.all()]
+) { db in
+    // Complex logic that always accesses Player table
+    let config = try Config.fetchOne(db)
+    return try Player.filter(Column("teamId") == config.favoriteTeamId).fetchAll(db)
+}
+```
+
+### Register Additional Regions
+
+Extend tracked regions from within the fetch closure:
+
+```swift
+let observation = ValueObservation.trackingConstantRegion { db in
+    // Also track Team table
+    try db.registerAccess(to: Team.all())
+    
+    let config = try Config.fetchOne(db)
+    if config.showPlayers {
+        return try Player.fetchAll(db)
+    } else {
+        return try Team.fetchAll(db)
+    }
+}
+```
+
+## Debugging
+
+### handleEvents
+
+Inspect observation events:
+
+```swift
+let observation = ValueObservation
+    .tracking { db in try Player.fetchAll(db) }
+    .handleEvents(
+        willStart: { print("Will start") },
+        willFetch: { print("Will fetch") },
+        willTrackRegion: { region in print("Tracking: \(region)") },
+        databaseDidChange: { print("Database changed") },
+        didReceiveValue: { value in print("Received: \(value)") },
+        didFail: { error in print("Failed: \(error)") },
+        didCancel: { print("Cancelled") }
+    )
+```
+
+### print
+
+Log all events:
+
+```swift
+let observation = ValueObservation
+    .tracking { db in try Player.fetchAll(db) }
+    .print("Players observation")
+
+// Prints:
+// Players observation: start
+// Players observation: fetch
+// Players observation: tracked region: player(*)
+// Players observation: value: [...]
+```
+
+## Cancellation
+
+Observations can be cancelled:
+
+```swift
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { _ in },
+    onChange: { _ in }
+)
+
+// Stop observing
+cancellable.cancel()
+```
+
+Observations are automatically cancelled when the returned cancellable is deallocated.
+
+## Error Handling
+
+```swift
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { error in
+        if let dbError = error as? DatabaseError {
+            print("Database error: \(dbError)")
+        } else {
+            print("Unexpected error: \(error)")
+        }
+    },
+    onChange: { players in
+        print("Players: \(players)")
+    }
+)
+```
+
+<Note>
+When an error occurs, the observation stops. You must create and start a new observation to resume.
+</Note>
+
+## SwiftUI Integration
+
+```swift
+import GRDB
+import SwiftUI
+
+struct PlayerList: View {
+    @Query(PlayerRequest()) var players: [Player]
+    
+    var body: some View {
+        List(players) { player in
+            Text(player.name)
+        }
+    }
+}
+
+struct PlayerRequest: Queryable {
+    static var defaultValue: [Player] { [] }
+    
+    func publisher(in database: DatabaseReader) -> DatabasePublishers.Value<[Player]> {
+        ValueObservation
+            .tracking { db in try Player.fetchAll(db) }
+            .publisher(in: database)
+    }
+}
+```
+
+## Best Practices
+
+<Tip>
+Keep observation closures fast. Heavy processing should happen after receiving values:
+
+```swift
+let observation = ValueObservation.tracking { db in
+    try Player.fetchAll(db) // Fast database query
+}
+
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { _ in },
+    onChange: { players in
+        // Heavy processing happens here, off the database queue
+        let processed = processPlayers(players)
+        updateUI(with: processed)
+    }
+)
+```
+</Tip>
+
+<Tip>
+Use `removeDuplicates()` to avoid unnecessary UI updates:
+
+```swift
+ValueObservation
+    .tracking { db in try Player.fetchCount(db) }
+    .removeDuplicates() // Only notify when count changes
+```
+</Tip>
+
+<Warning>
+Avoid modifying the database from within the observation closure. This can cause infinite loops.
+</Warning>
+
+## Related Topics
+
+- [`DatabaseRegionObservation`](/api/database-region-observation) - Lower-level observation
+- [TransactionObserver](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/transactionobserver) - Observing individual changes
+
+## See Also
+
+- [ValueObservation Guide](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/valueobservation)
+- [Database Observation](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databaseobservation)

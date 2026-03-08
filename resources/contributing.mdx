@@ -1,0 +1,221 @@
+---
+title: Contributing to GRDB
+description: How to contribute code, answer issues, and support the project
+icon: handshake
+---
+
+GRDB is an open-source project that welcomes contributions from the community. There are several ways you can help improve the library.
+
+## Ways to Contribute
+
+<CardGroup cols={3}>
+  <Card title="Code" icon="code" href="#contribute-to-the-codebase">
+    Submit pull requests with improvements and bug fixes
+  </Card>
+  <Card title="Support" icon="comments" href="#answer-issues-and-discussions">
+    Help others in issues and discussions
+  </Card>
+  <Card title="Sponsor" icon="heart" href="#financial-support">
+    Support development financially
+  </Card>
+</CardGroup>
+
+## Contribute to the Codebase
+
+### Setup Your Development Environment
+
+<Steps>
+  <Step title="Install Required Tools">
+    For running tests:
+    - Ruby
+    - [CocoaPods](https://cocoapods.org) (gem)
+    - [xcpretty](https://github.com/xcpretty/xcpretty) (gem)
+
+    For contributing code:
+    - [SwiftLint](https://github.com/realm/SwiftLint) (in `$PATH` or `/opt/homebrew/bin/`)
+  </Step>
+
+  <Step title="Clone the Repository">
+    Clone the `development` branch:
+
+    ```bash
+    git clone -b development https://github.com/groue/GRDB.swift.git
+    cd GRDB.swift
+    ```
+  </Step>
+
+  <Step title="Build Custom SQLite (Optional)">
+    Run at the repository root:
+
+    ```bash
+    make SQLiteCustom
+    ```
+
+    This avoids warnings in Xcode, though it's not strictly necessary if you don't plan to work on custom SQLite builds.
+  </Step>
+
+  <Step title="Open the Workspace">
+    Open `GRDB.xcworkspace` in Xcode:
+
+    - `GRDB.xcodeproj`: Main framework and tests
+    - `GRDBCustom.xcodeproj`: Custom SQLite builds
+    - `GRDBProfiling.xcodeproj`: Profiling with Instruments
+    - Demo app projects
+  </Step>
+</Steps>
+
+### Running Tests
+
+You can run tests from Xcode or the command line.
+
+**Before submitting a pull request**, run smoke tests:
+
+```bash
+make smokeTest
+```
+
+The smoke tests perform minimal testing of system SQLite, SQLCipher, custom SQLite builds, and SPM integration.
+
+**Before a release**, the full test suite must pass:
+
+```bash
+make test
+```
+
+### Code Style Guidelines
+
+<Steps>
+  <Step title="Follow Swift API Design Guidelines">
+    Familiarize yourself with the [Swift API Design Guidelines](https://www.swift.org/documentation/api-design-guidelines/).
+  </Step>
+
+  <Step title="Use Spaces, Not Tabs">
+    All indentation should use spaces.
+  </Step>
+
+  <Step title="Preserve Whitespace-Only Lines">
+    Don't trim whitespace-only lines.
+  </Step>
+
+  <Step title="Wrap Documentation Comments">
+    Hard-wrap documentation comments at column 76.
+    
+    Set in Xcode: Preferences > Text Editing > Display > Page guide at column: 76
+  </Step>
+
+  <Step title="No SwiftLint Warnings">
+    Ensure there are no SwiftLint warnings after building.
+  </Step>
+</Steps>
+
+### Documentation Requirements
+
+GRDB is **documentation-driven**: nothing ships without proper documentation.
+
+<Accordion title="Where to Document">
+  - **DocC Reference**: API documentation using DocC comments
+  - **Guides**: README.md and files in the [Documentation](https://github.com/groue/GRDB.swift/tree/master/Documentation) folder
+</Accordion>
+
+<Accordion title="Building DocC Documentation">
+  To verify your DocC reference documentation:
+
+  1. Close the workspace
+  2. Open `Package.swift` in Xcode
+  3. Use **Product > Build Documentation**
+</Accordion>
+
+<Accordion title="Documentation Makes Sense When...">
+  - Someone who is not you can understand the feature's purpose
+  - Usage is clearly explained
+  - Caveats and corner cases are documented
+  - If documentation is hard to write, the API may need fixing
+</Accordion>
+
+### Submitting Your Contribution
+
+<Steps>
+  <Step title="Make Your Changes">
+    Write code, add tests, and update documentation.
+  </Step>
+
+  <Step title="Test Thoroughly">
+    Run `make smokeTest` to verify your changes.
+  </Step>
+
+  <Step title="Open a Pull Request">
+    Target the `development` branch with your pull request.
+  </Step>
+</Steps>
+
+<Tip>
+  If you're granted push access to the repository, check [ReleaseProcess.md](https://github.com/groue/GRDB.swift/blob/master/Documentation/ReleaseProcess.md) for publishing a new version.
+</Tip>
+
+## Answer Issues and Discussions
+
+Helping others is a great way to contribute:
+
+- Answer questions in [GitHub Issues](https://github.com/groue/GRDB.swift/issues)
+- Participate in [GitHub Discussions](https://github.com/groue/GRDB.swift/discussions)
+- Join conversations in the [Swift Forums](https://forums.swift.org/c/related-projects/grdb/36)
+
+This helps you:
+- Get familiar with the library
+- Help shape its direction
+- Build community expertise
+
+<CardGroup cols={2}>
+  <Card title="GitHub Issues" icon="github" href="https://github.com/groue/GRDB.swift/issues">
+    Report bugs and request features
+  </Card>
+  <Card title="GitHub Discussions" icon="comments" href="https://github.com/groue/GRDB.swift/discussions">
+    Ask questions and share knowledge
+  </Card>
+  <Card title="Swift Forums" icon="swift" href="https://forums.swift.org/c/related-projects/grdb/36">
+    Discuss GRDB with the Swift community
+  </Card>
+  <Card title="Follow @groue" icon="mastodon" href="https://hachyderm.io/@groue">
+    Get release announcements and tips
+  </Card>
+</CardGroup>
+
+## Financial Support
+
+GRDB is free and openly developed by contributors on their free time. It's not controlled by any company.
+
+### Support Channels
+
+Support is free as long as it happens **publicly** and is available to everyone (including search engines). This excludes:
+- Private social network channels
+- Closed environments like Slack
+
+### Commercial Support
+
+For specific development or support needs, contact:
+
+- **Email**: [Gwendal Roué](mailto:gr@pierlis.com)
+- **Company**: [Pierlis](http://pierlis.com/) (Paris, France)
+
+### Sponsorship
+
+You can sponsor GRDB development:
+
+<Card title="Sponsor @groue on GitHub" icon="github" href="https://github.com/sponsors/groue">
+  Support ongoing development and maintenance
+</Card>
+
+## Project Governance
+
+<Note>
+  GRDB is **not controlled by any company**. Development happens according to contributors' will, needs, and availability. All major decisions are made transparently in issues and discussions.
+</Note>
+
+## Recognition
+
+Contributors are recognized in:
+- Release notes and CHANGELOG.md
+- GitHub contributor graphs
+- Pull request acknowledgments
+
+Thank you for helping make GRDB better! 🙏

@@ -1,0 +1,437 @@
+---
+title: "Column"
+description: "Type-safe database column references"
+---
+
+`Column` represents a column in a database table, providing type-safe references for query building.
+
+## Overview
+
+Use `Column` to build type-safe queries:
+
+```swift
+// Define columns
+enum Columns {
+    static let id = Column("id")
+    static let name = Column("name")
+    static let score = Column("score")
+}
+
+// Use in queries
+let request = Player.filter(Columns.score > 1000)
+```
+
+<Tip>
+Define columns once in your record type's `Columns` enum for reuse throughout your codebase.
+</Tip>
+
+## Creating Columns
+
+### init(_:)
+
+Creates a column from a string name:
+
+<ParamField path="name" type="String" required>
+  The column name (unqualified)
+</ParamField>
+
+```swift
+let nameColumn = Column("name")
+let scoreColumn = Column("score")
+```
+
+<Note>
+Column names should be unqualified (e.g., `"score"`, not `"player.score"`).
+</Note>
+
+### From CodingKeys
+
+Create columns from `CodingKeys`:
+
+```swift
+struct Player: Codable {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    enum Columns {
+        static let id = Column(CodingKeys.id)
+        static let name = Column(CodingKeys.name)
+        static let score = Column(CodingKeys.score)
+    }
+}
+```
+
+## Standard Columns
+
+### rowID
+
+<ResponseField name="rowID" type="Column">
+  The hidden SQLite rowid column
+</ResponseField>
+
+```swift
+// SELECT rowid FROM player
+let rowIDs = try Player.select(Column.rowID).fetchAll(db)
+
+// WHERE rowid = 42
+let request = Player.filter(Column.rowID == 42)
+```
+
+## Using Columns in Queries
+
+### Filtering
+
+```swift
+// WHERE score > 1000
+Player.filter(Column("score") > 1000)
+
+// WHERE name = 'Arthur'
+Player.filter(Column("name") == "Arthur")
+
+// WHERE score BETWEEN 100 AND 200
+Player.filter((100...200).contains(Column("score")))
+
+// WHERE name IN ('Arthur', 'Barbara')
+Player.filter(["Arthur", "Barbara"].contains(Column("name")))
+```
+
+### Ordering
+
+```swift
+// ORDER BY score DESC
+Player.order(Column("score").desc)
+
+// ORDER BY name ASC
+Player.order(Column("name"))
+
+// ORDER BY score DESC, name ASC
+Player.order(Column("score").desc, Column("name"))
+```
+
+### Selecting
+
+```swift
+// SELECT id, name
+Player.select(Column("id"), Column("name"))
+
+// SELECT DISTINCT name
+Player.select(Column("name")).distinct()
+```
+
+### Grouping
+
+```swift
+// GROUP BY teamId
+Player.group(Column("teamId"))
+
+// GROUP BY teamId HAVING COUNT(*) > 5
+Player
+    .group(Column("teamId"))
+    .having(count(Column("*")) > 5)
+```
+
+## Column Expressions
+
+### Comparisons
+
+```swift
+Column("score") == 100
+Column("score") != 100
+Column("score") < 100
+Column("score") <= 100
+Column("score") > 100
+Column("score") >= 100
+```
+
+### Arithmetic
+
+```swift
+Column("score") + 10
+Column("score") - 10
+Column("score") * 2
+Column("score") / 2
+
+// Combined
+(Column("score") + Column("bonus")) * 2
+```
+
+### Logical Operators
+
+```swift
+Column("active") && Column("verified")
+Column("active") || Column("admin")
+!Column("deleted")
+```
+
+### String Operations
+
+```swift
+// LIKE
+Column("name").like("Art%")
+
+// Case-insensitive
+Column("email").collating(.nocase) == "[email protected]"
+```
+
+### NULL Checks
+
+```swift
+// IS NULL
+Column("deletedAt") == nil
+
+// IS NOT NULL  
+Column("deletedAt") != nil
+```
+
+### IN Operator
+
+```swift
+[1, 2, 3].contains(Column("id"))
+Column("status").in(["active", "pending"])
+```
+
+## SQL Functions
+
+### Aggregate Functions
+
+```swift
+count(Column("*"))
+count(distinct: Column("teamId"))
+min(Column("score"))
+max(Column("score"))
+sum(Column("score"))
+average(Column("score"))
+```
+
+### String Functions
+
+```swift
+length(Column("name"))
+Column("name").uppercased()
+Column("name").lowercased()
+```
+
+### Math Functions
+
+```swift
+abs(Column("value"))
+```
+
+## Column Assignments
+
+Use columns to create assignments for updates:
+
+### set(to:)
+
+```swift
+// UPDATE player SET score = 100
+Player.updateAll(db) { player in
+    [player.score.set(to: 100)]
+}
+
+// UPDATE player SET score = score + 10
+Player.updateAll(db) { player in
+    [player.score.set(to: player.score + 10)]
+}
+```
+
+### noOverwrite
+
+Prevent overwriting on conflict:
+
+```swift
+try Player.updateAll(db, onConflict: .ignore) { player in
+    [player.name.noOverwrite]
+}
+```
+
+## Detached Columns
+
+### detached
+
+Refers to an aliased column without table qualification:
+
+```swift
+let request = Player
+    .annotated(with: { ($0.score + $0.bonus).forKey("total") })
+    .order { [Column("total").detached, $0.name] }
+
+// Generates:
+// SELECT player.*, (player.score + player.bonus) AS total
+// FROM player
+// ORDER BY total, player.name
+```
+
+## Full-Text Search
+
+### match(_:)
+
+Full-text search matching:
+
+```swift
+// FTS5 table
+struct Document: TableRecord, FetchableRecord {
+    static let databaseTableName = "documents"
+}
+
+// MATCH query
+let pattern = FTS5Pattern(matchingAllTokensIn: "SQLite database")
+let request = Document.filter(Column.match(pattern))
+```
+
+## Column Properties
+
+### name
+
+<ResponseField name="name" type="String">
+  The column name
+</ResponseField>
+
+```swift
+let column = Column("score")
+print(column.name) // "score"
+```
+
+## Best Practices
+
+### Define Columns in Record Types
+
+```swift
+struct Player: TableRecord {
+    static let databaseTableName = "player"
+    
+    enum Columns {
+        static let id = Column("id")
+        static let name = Column("name")
+        static let score = Column("score")
+        static let teamId = Column("teamId")
+    }
+}
+
+// Use consistently
+Player.filter(Player.Columns.score > 1000)
+Player.order(Player.Columns.name)
+```
+
+### Use with TableRecord
+
+Combine with [`TableRecord`](/api/table-record) for maximum type safety:
+
+```swift
+struct Player: TableRecord, FetchableRecord, Decodable {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    enum Columns {
+        static let id = Column(CodingKeys.id)
+        static let name = Column(CodingKeys.name)
+        static let score = Column(CodingKeys.score)
+    }
+}
+
+let players = try Player
+    .filter(Player.Columns.score > 1000)
+    .order(Player.Columns.score.desc)
+    .fetchAll(db)
+```
+
+### String vs Column Enums
+
+For simple cases, string-based column enums are convenient:
+
+```swift
+enum Columns: String, ColumnExpression {
+    case id, name, score
+}
+
+Player.filter(Columns.score > 1000)
+```
+
+## Performance
+
+<Tip>
+Columns are lightweight value types with no runtime overhead. The query interface compiles to efficient SQL.
+</Tip>
+
+<Tip>
+Define columns once and reuse them. This provides compile-time safety and autocomplete support:
+
+```swift
+// Good - reusable, type-safe
+Player.filter(Player.Columns.score > 1000)
+
+// Less ideal - prone to typos
+Player.filter(Column("score") > 1000)
+```
+</Tip>
+
+## Common Patterns
+
+### Dynamic Column Selection
+
+```swift
+func fetchPlayer(includeScore: Bool, db: Database) throws -> [Player] {
+    var columns: [any SQLSelectable] = [
+        Player.Columns.id,
+        Player.Columns.name
+    ]
+    
+    if includeScore {
+        columns.append(Player.Columns.score)
+    }
+    
+    return try Player.select(columns).fetchAll(db)
+}
+```
+
+### Computed Columns
+
+```swift
+enum Columns {
+    static let id = Column("id")
+    static let firstName = Column("firstName")
+    static let lastName = Column("lastName")
+    
+    // Computed expression
+    static var fullName: SQLExpression {
+        [firstName, " ", lastName].joined()
+    }
+}
+
+Player.select(Columns.fullName.forKey("fullName"))
+```
+
+### Conditional Filters
+
+```swift
+func searchPlayers(
+    name: String?,
+    minScore: Int?,
+    db: Database
+) throws -> [Player] {
+    var request = Player.all()
+    
+    if let name {
+        request = request.filter(Player.Columns.name == name)
+    }
+    
+    if let minScore {
+        request = request.filter(Player.Columns.score >= minScore)
+    }
+    
+    return try request.fetchAll(db)
+}
+```
+
+## Related Topics
+
+- [`TableRecord`](/api/table-record) - Table and column configuration
+- [`query-interface`](/api/query-interface) - Building SQL queries
+- [SQLExpression](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/sqlexpression) - SQL expressions
+
+## See Also
+
+- [Query Interface](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/queryinterface)
+- [Recommended Practices](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/recordrecommendedpractices)

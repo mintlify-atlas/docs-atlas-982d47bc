@@ -1,0 +1,371 @@
+---
+title: Values and Types
+description: Supported value types and how to store them in GRDB
+---
+
+GRDB ships with built-in support for storing and fetching various Swift and Foundation types in SQLite databases.
+
+## Supported Value Types
+
+GRDB supports the following value types out of the box:
+
+**Swift Standard Library:**
+- `Bool` - Stored as INTEGER (0 or 1)
+- `Double`, `Float` - Stored as REAL
+- All signed and unsigned integer types (`Int`, `Int8`, `Int16`, `Int32`, `Int64`, `UInt`, `UInt8`, `UInt16`, `UInt32`, `UInt64`) - Stored as INTEGER
+- `String` - Stored as TEXT
+- [Swift enums](#swift-enums)
+
+**Foundation:**
+- `Data` - Stored as BLOB
+- `Date` - Stored as TEXT ("YYYY-MM-DD HH:MM:SS.SSS" in UTC)
+- `DateComponents` - Stored as TEXT (various formats)
+- `Decimal` - Stored as TEXT
+- `NSNull` - Stored as NULL
+- `NSNumber` - Stored as INTEGER or REAL
+- `NSDecimalNumber` - Stored as INTEGER or REAL
+- `NSString` - Stored as TEXT
+- `URL` - Stored as TEXT
+- `UUID` - Stored as 16-byte BLOB
+
+**CoreGraphics:**
+- `CGFloat` - Stored as REAL
+
+## Using Values
+
+Values can be used as statement arguments:
+
+```swift
+let url: URL = ...
+let verified: Bool = ...
+try db.execute(
+    sql: "INSERT INTO link (url, verified) VALUES (?, ?)",
+    arguments: [url, verified])
+```
+
+Extract values from rows:
+
+```swift
+let rows = try Row.fetchCursor(db, sql: "SELECT * FROM link")
+while let row = try rows.next() {
+    let url: URL = row["url"]
+    let verified: Bool = row["verified"]
+}
+```
+
+Fetch values directly:
+
+```swift
+let urls = try URL.fetchAll(db, sql: "SELECT url FROM link")  // [URL]
+let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM link") // Int?
+```
+
+## Working with Specific Types
+
+### Bool
+
+Booleans are stored as integers (0 for `false`, 1 for `true`). Any non-zero value is considered `true` when reading:
+
+```swift
+try db.execute(sql: "INSERT INTO settings (enabled) VALUES (?)", arguments: [true])
+let enabled: Bool = try Bool.fetchOne(db, sql: "SELECT enabled FROM settings")!
+```
+
+### Integers
+
+All Swift integer types are supported. SQLite stores integers as 64-bit signed values:
+
+```swift
+let score: Int = 1000
+let playerId: Int64 = 42
+let smallValue: UInt8 = 255
+
+try db.execute(
+    sql: "INSERT INTO game (score, playerId, level) VALUES (?, ?, ?)",
+    arguments: [score, playerId, smallValue])
+```
+
+<Warning>
+Be careful with unsigned types - values larger than `Int64.max` may cause conversion errors.
+</Warning>
+
+### String
+
+Strings are stored as UTF-8 TEXT:
+
+```swift
+let name = "Arthur"
+try db.execute(sql: "INSERT INTO player (name) VALUES (?)", arguments: [name])
+
+let names = try String.fetchAll(db, sql: "SELECT name FROM player")
+```
+
+### Data
+
+Data values suit BLOB SQLite columns:
+
+```swift
+let imageData: Data = ...
+try db.execute(sql: "INSERT INTO photo (image) VALUES (?)", arguments: [imageData])
+
+let row = try Row.fetchOne(db, sql: "SELECT image FROM photo")!
+let data: Data = row["image"]
+```
+
+#### Memory Savings
+
+You can avoid copying data with the `withUnsafeData` method:
+
+```swift
+let rows = try Row.fetchCursor(db, sql: "SELECT image FROM photo")
+while let row = try rows.next() {
+    try row.withUnsafeData(name: "image") { (data: Data?) in
+        // Use data here - it doesn't outlive this closure
+    }
+}
+```
+
+<Note>
+The non-copied data does not live longer than the iteration step.
+</Note>
+
+### Date
+
+Dates are stored using the format "YYYY-MM-DD HH:MM:SS.SSS" in UTC, precise to the millisecond:
+
+```swift
+let now = Date()
+try db.execute(
+    sql: "INSERT INTO player (creationDate) VALUES (?)",
+    arguments: [now])
+
+let row = try Row.fetchOne(db, sql: "SELECT creationDate FROM player")!
+let creationDate: Date = row["creationDate"]
+```
+
+<Warning>
+The range of valid years is 0000-9999. Years outside this range will cause issues.
+</Warning>
+
+This format was chosen because it is:
+- Comparable (ORDER BY works)
+- Compatible with SQLite's CURRENT_TIMESTAMP
+- Compatible with SQLite date & time functions
+- Precise to the millisecond
+
+#### Custom Date Formats
+
+If you need a different date format, you can store dates as TimeInterval:
+
+```swift
+let date = Date()
+let timeInterval = date.timeIntervalSinceReferenceDate
+try db.execute(
+    sql: "INSERT INTO event (timestamp) VALUES (?)",
+    arguments: [timeInterval])
+
+if let row = try Row.fetchOne(db, sql: "SELECT timestamp FROM event") {
+    let timeInterval: TimeInterval = row["timestamp"]
+    let date = Date(timeIntervalSinceReferenceDate: timeInterval)
+}
+```
+
+### DateComponents
+
+Use `DatabaseDateComponents` to store date components:
+
+```swift
+var components = DateComponents()
+components.year = 1973
+components.month = 9
+components.day = 18
+
+// Store as "1973-09-18"
+let dbComponents = DatabaseDateComponents(components, format: .YMD)
+try db.execute(
+    sql: "INSERT INTO player (birthDate) VALUES (?)",
+    arguments: [dbComponents])
+
+// Read back
+let row = try Row.fetchOne(db, sql: "SELECT birthDate FROM player")!
+let stored: DatabaseDateComponents = row["birthDate"]
+stored.format         // .YMD
+stored.dateComponents // DateComponents
+```
+
+### Decimal and NSNumber
+
+**NSNumber** stores as INTEGER or REAL:
+
+```swift
+// Stores as INTEGER
+try db.execute(sql: "INSERT INTO transfer VALUES (?)", 
+    arguments: [NSNumber(value: 10)])
+
+// Stores as REAL
+try db.execute(sql: "INSERT INTO transfer VALUES (?)", 
+    arguments: [NSNumber(value: 10.5)])
+```
+
+**Decimal** stores as TEXT to preserve precision:
+
+```swift
+// Stores as '10.5'
+try db.execute(sql: "INSERT INTO transfer VALUES (?)", 
+    arguments: [Decimal(string: "10.5")!])
+
+let amount = try Decimal.fetchOne(db, sql: "SELECT amount FROM transfer")
+```
+
+<Tip>
+Use `Decimal` for financial calculations to avoid floating-point precision issues.
+</Tip>
+
+### URL
+
+URLs are stored as TEXT:
+
+```swift
+let url = URL(string: "https://github.com/groue/GRDB.swift")!
+try db.execute(sql: "INSERT INTO link (url) VALUES (?)", arguments: [url])
+
+let urls = try URL.fetchAll(db, sql: "SELECT url FROM link")
+```
+
+### UUID
+
+UUIDs are stored as 16-byte BLOB and can be decoded from both BLOB and TEXT:
+
+```swift
+let id = UUID()
+try db.execute(sql: "INSERT INTO session (id) VALUES (?)", arguments: [id])
+
+let sessionId: UUID = try UUID.fetchOne(db, sql: "SELECT id FROM session")!
+```
+
+GRDB can also decode UUIDs from string representations like "E621E1F8-C36C-495A-93FC-0C247A3E6E5F".
+
+## Swift Enums
+
+Swift enums that conform to `RawRepresentable` can be stored using their raw values:
+
+```swift
+enum Color: Int {
+    case red, white, rose
+}
+
+enum Grape: String {
+    case chardonnay, merlot, riesling
+}
+
+// Declare DatabaseValueConvertible adoption
+extension Color: DatabaseValueConvertible { }
+extension Grape: DatabaseValueConvertible { }
+
+// Store
+try db.execute(
+    sql: "INSERT INTO wine (grape, color) VALUES (?, ?)",
+    arguments: [Grape.merlot, Color.red])
+
+// Read
+let row = try Row.fetchOne(db, sql: "SELECT * FROM wine")!
+let grape: Grape = row["grape"]  // .merlot
+let color: Color = row["color"]  // .red
+```
+
+### Handling Unknown Values
+
+When a database value doesn't match any enum case, you get a fatal error. Use `DatabaseValue` to handle this gracefully:
+
+```swift
+let row = try Row.fetchOne(db, sql: "SELECT 'syrah'")!
+
+let dbValue: DatabaseValue = row[0]
+if dbValue.isNull {
+    // Handle NULL
+} else if let grape = Grape.fromDatabaseValue(dbValue) {
+    // Handle valid grape
+} else {
+    // Handle unknown grape
+}
+```
+
+## Custom Value Types
+
+To support your own types, conform to the `DatabaseValueConvertible` protocol:
+
+```swift
+struct Color {
+    let red: Double
+    let green: Double
+    let blue: Double
+}
+
+extension Color: DatabaseValueConvertible {
+    var databaseValue: DatabaseValue {
+        "\(red),\(green),\(blue)".databaseValue
+    }
+    
+    static func fromDatabaseValue(_ dbValue: DatabaseValue) -> Color? {
+        guard let string = String.fromDatabaseValue(dbValue) else {
+            return nil
+        }
+        let components = string.split(separator: ",").compactMap { Double($0) }
+        guard components.count == 3 else { return nil }
+        return Color(red: components[0], green: components[1], blue: components[2])
+    }
+}
+```
+
+## NULL Handling
+
+Use optional types to handle NULL values:
+
+```swift
+// NULL-safe reading
+let name: String? = row["name"]  // nil if NULL
+let name: String = row["name"]   // fatal error if NULL
+
+// Writing NULL
+try db.execute(
+    sql: "INSERT INTO player (name, email) VALUES (?, ?)",
+    arguments: ["Arthur", nil])  // email will be NULL
+```
+
+## Type Conversions
+
+GRDB follows SQLite's type system and allows these conversions:
+
+**Successful conversions:**
+- All numeric SQLite values to all numeric Swift types and Bool
+- TEXT values to String
+- BLOB values to Data
+
+**NULL behavior:**
+- NULL converts to `nil` for optional types
+- NULL causes a fatal error for non-optional types
+
+**Invalid conversions cause fatal errors:**
+
+```swift
+let row = try Row.fetchOne(db, sql: "SELECT 'not a date'")!
+row[0] as String  // "not a date" ✓
+row[0] as Date    // fatal error ✗
+```
+
+Use `DatabaseValue` to handle conversions safely:
+
+```swift
+let dbValue: DatabaseValue = row[0]
+if let date = Date.fromDatabaseValue(dbValue) {
+    // Valid date
+} else {
+    // Invalid date
+}
+```
+
+## See Also
+
+- [Records](/records/overview) - Define custom record types
+- [Query Interface](/query-interface/requests) - Type-safe queries
+- [SQL Interpolation](/sqlite-api/sql-interpolation) - Safe SQL with interpolated values

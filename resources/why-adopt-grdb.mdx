@@ -1,0 +1,214 @@
+---
+title: Why Adopt GRDB?
+description: Discover the core principles and advantages of using GRDB for SQLite database access
+icon: star
+---
+
+GRDB is a toolkit for SQLite databases with a focus on application development. This guide explains the philosophy behind GRDB and why it could become your favorite database library.
+
+## Core Principles
+
+### Record Types Over Raw Rows
+
+It's generally easier to access a database through "record types" rather than dealing with raw database rows.
+
+```swift
+player.name // ✓ Natural and type-safe
+playerRow["name"] // Less intuitive
+```
+
+GRDB records are plain Swift values—no auto-updating, no uniquing, no lazy loading. This design embraces:
+- **Immutability**: Records can be value types (structs)
+- **Memory safety**: No hidden state or side effects  
+- **Multi-threading safety**: Values can cross threads freely
+
+<Tip>
+  GRDB belongs to a new generation of ORMs like Rust's [Diesel](http://diesel.rs), where records behave as simple values instead of managed objects.
+</Tip>
+
+### Raw SQL When You Need It
+
+Complex queries sometimes need to be prototyped in an SQL shell. Once perfected, translating them to a query builder can be painful with no guarantee of success.
+
+GRDB lets you use raw SQL whenever it makes sense:
+
+```swift
+// Query interface
+let bestPlayers = try Player
+    .order(\.score.desc)
+    .limit(10)
+    .fetchAll(db)
+
+// Raw SQL - equally supported
+let bestPlayers = try Player.fetchAll(db, sql: """
+    SELECT * FROM player ORDER BY score DESC LIMIT 10
+    """)
+```
+
+### The Database as Single Source of Truth
+
+Unlike Core Data (with multiple managed object contexts) or Realm (with per-thread databases), GRDB assumes apps want a reliable and unambiguous storage:
+
+- **One truth**: The database file is authoritative
+- **Explicit fetches**: Records are snapshots, not live objects
+- **Clear updates**: Changes go through explicit save operations
+
+<Note>
+  Fetched records behave like an in-memory cache. Your app decides whether to ignore future changes or observe them with `ValueObservation`.
+</Note>
+
+### Focus on Application Developers
+
+GRDB puts all bets on **SQLite** and **front-end GUI applications**:
+
+- ✓ iOS, macOS, watchOS, tvOS
+- ✓ Migrations, database observation, concurrency safety
+- ✓ SwiftUI and Combine support
+- ✗ Servers, MySQL, or PostgreSQL (out of scope)
+
+## Solving Real Problems
+
+### Any Swift Type Can Be a Record
+
+Most libraries require you to subclass a root class (NSManagedObject, Realm.Object). This prevents using Swift structs and value types.
+
+With GRDB, any type can become a record:
+
+```swift
+struct Place {
+    var id: Int64?
+    let title: String
+    let coordinate: CLLocationCoordinate2D
+}
+
+// Add protocols to gain persistence abilities
+extension Place: FetchableRecord { } // Load from database
+extension Place: TableRecord { }      // Generate SQL queries  
+extension Place: PersistableRecord { } // Save to database
+```
+
+Being protocol-oriented and welcoming immutable types, GRDB records don't auto-update or enforce uniquing.
+
+### Records That Cross Threads
+
+Immutable value records can safely cross threads. No need to pass object IDs like Core Data or Realm:
+
+```swift
+if let player = try Player.fetchOne(db, key: 1) {
+    DispatchQueue.main.async {
+        nameField.text = player.name // ✓ Safe
+    }
+}
+```
+
+### Database Change Notifications
+
+Instead of auto-updating records, GRDB provides [ValueObservation](https://swiftpackageindex.com/groue/GRDB.swift/documentation/grdb/valueobservation) to reactively track database changes:
+
+```swift
+// Define what to observe
+let observation = ValueObservation.tracking { db in
+    try Player.fetchAll(db)
+}
+
+// Start observing
+let cancellable = observation.start(in: dbQueue) { players in
+    print("Fresh players: \(players)")
+}
+```
+
+**Guarantees:**
+
+- Notifications only for committed changes (saved on disk)
+- Changes notified in transaction order
+- All changes detected: record methods, raw SQL, triggers, foreign key cascades
+
+### Non-Blocking Reads
+
+[DatabasePool](https://swiftpackageindex.com/groue/GRDB.swift/documentation/grdb/databasepool) enables concurrent reads, so long-running writes don't block UI queries:
+
+```swift
+let dbPool = try DatabasePool(path: dbPath)
+
+// Concurrent reads don't block each other
+try dbPool.read { db in
+    // UI query
+}
+```
+
+## Concurrency Comparison
+
+How different libraries handle multi-threading challenges:
+
+| Library | Concurrent Writes | Isolation | Conflicts | Blocked UI |
+|---------|-------------------|-----------|-----------|------------|
+| **FMDB (FMDatabase)** | App handles | App handles | App handles | App handles |
+| **FMDB (FMDatabaseQueue)** | ✓ | ✓ | App handles | Blocks |
+| **SQLite.swift** | ✓ | App handles | App handles | App handles |
+| **Core Data** | App handles | ✓ | Difficult | App handles |
+| **GRDB (DatabaseQueue)** | ✓ | ✓ | App handles | Blocks |
+| **GRDB (DatabasePool)** | ✓ | ✓ | App handles | ✓ (unless max readers reached) |
+
+<Note>
+  Conflicts (same data edited concurrently) are always the app's responsibility. GRDB provides tools but doesn't enforce policies.
+</Note>
+
+## Never Pay for Using Raw SQL
+
+GRDB's query interface generates SQL, but you can always drop to raw SQL:
+
+```swift
+// Query interface
+try Player.order(\.score.desc).limit(10).fetchAll(db)
+
+// Raw SQL - equally supported
+try Player.fetchAll(db, sql: "SELECT * FROM player ORDER BY score DESC LIMIT 10")
+```
+
+[SQL interpolation](https://github.com/groue/GRDB.swift/blob/master/Documentation/SQLInterpolation.md) provides safety without verbosity:
+
+```swift
+let score = 1000
+let id = 42
+try db.execute(literal: "UPDATE player SET score = \(score) WHERE id = \(id)")
+```
+
+Custom SQL works everywhere:
+- Direct execution
+- Record fetching
+- Query interface mixing
+- Database observation (ValueObservation, Combine, RxSwift)
+
+## Performance and Flexibility
+
+For performance-critical code, access raw rows with lazy cursors:
+
+```swift
+let rows = try Row.fetchCursor(db, sql: "SELECT id, name, score FROM player")
+while let row = try rows.next() {
+    let id: Int64 = row[0]
+    let name: String = row[1]
+    let score: Int = row[2]
+}
+```
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add GRDB to your project
+  </Card>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Build your first GRDB app
+  </Card>
+  <Card title="Demo Apps" icon="code" href="/resources/demo-apps">
+    Explore example applications
+  </Card>
+  <Card title="Best Practices" icon="star" href="https://swiftpackageindex.com/groue/GRDB.swift/documentation/grdb/recordrecommendedpractices">
+    Design patterns and recommendations
+  </Card>
+</CardGroup>
+
+<Tip>
+  The [Concurrency Guide](https://swiftpackageindex.com/groue/GRDB.swift/documentation/grdb/concurrency) provides detailed information about GRDB's multi-threading guarantees.
+</Tip>

@@ -1,0 +1,308 @@
+---
+title: "DatabaseRegionObservation"
+description: "Low-level observation of database region changes"
+---
+
+`DatabaseRegionObservation` is a low-level API for observing changes to specific database regions without fetching values.
+
+## Overview
+
+While [`ValueObservation`](/api/value-observation) automatically fetches fresh values, `DatabaseRegionObservation` only notifies you that a region has changed:
+
+```swift
+let observation = DatabaseRegionObservation(tracking: Player.all())
+
+observation.start(in: dbQueue) { error in
+    print("Error: \(error)")
+} onChange: {
+    print("The player table was modified")
+    // You decide when and how to fetch
+}
+```
+
+<Note>
+Most applications should use [`ValueObservation`](/api/value-observation) instead. Use `DatabaseRegionObservation` only when you need fine-grained control over when values are fetched.
+</Note>
+
+## Creating Observations
+
+### tracking(_:)
+
+Observes a single database region:
+
+```swift
+// Observe the entire player table
+let observation = DatabaseRegionObservation(tracking: Player.all())
+
+// Observe specific rows
+let observation = DatabaseRegionObservation(
+    tracking: Player.filter(Column("teamId") == 1)
+)
+
+// Observe specific columns
+let observation = DatabaseRegionObservation(
+    tracking: Player.select(Column("score"))
+)
+```
+
+### tracking(_:_:)
+
+Observes multiple regions:
+
+```swift
+let observation = DatabaseRegionObservation(
+    tracking: Player.all(),
+    Team.all()
+)
+```
+
+## Database Regions
+
+A database region represents a set of database rows and columns:
+
+### Table Regions
+
+```swift
+// Entire table
+DatabaseRegionObservation(tracking: Table("player"))
+
+// All rows from a record type
+DatabaseRegionObservation(tracking: Player.all())
+```
+
+### Row Regions
+
+```swift
+// Specific rows by primary key
+DatabaseRegionObservation(tracking: Player.filter(key: [1, 2, 3]))
+
+// Rows matching a filter
+DatabaseRegionObservation(tracking: Player.filter(Column("teamId") == 1))
+```
+
+### Column Regions
+
+```swift
+// Specific columns
+DatabaseRegionObservation(
+    tracking: Player.select(Column("name"), Column("score"))
+)
+```
+
+### Full Database
+
+```swift
+DatabaseRegionObservation(tracking: DatabaseRegion.fullDatabase)
+```
+
+## Starting Observations
+
+### start(in:onError:onChange:)
+
+Starts observing database changes:
+
+<ParamField path="reader" type="DatabaseReader" required>
+  The database queue or pool
+</ParamField>
+
+<ParamField path="onError" type="(Error) -> Void" required>
+  Called when an error occurs
+</ParamField>
+
+<ParamField path="onChange" type="() -> Void" required>
+  Called when the observed region changes
+</ParamField>
+
+```swift
+let observation = DatabaseRegionObservation(tracking: Player.all())
+
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { error in
+        print("Error: \(error)")
+    },
+    onChange: {
+        print("Player table changed")
+        // Fetch fresh data when needed
+    }
+)
+```
+
+## Use Cases
+
+### Throttled Updates
+
+Fetch values only when appropriate:
+
+```swift
+class PlayerManager {
+    private var needsRefresh = false
+    private var observation: DatabaseRegionObservation
+    private var cancellable: AnyCancellable?
+    
+    init(dbQueue: DatabaseQueue) {
+        observation = DatabaseRegionObservation(tracking: Player.all())
+        
+        cancellable = observation.start(
+            in: dbQueue,
+            onError: { _ in },
+            onChange: { [weak self] in
+                self?.needsRefresh = true
+            }
+        )
+    }
+    
+    func refreshIfNeeded(_ db: Database) throws -> [Player] {
+        guard needsRefresh else {
+            return cachedPlayers
+        }
+        
+        let players = try Player.fetchAll(db)
+        cachedPlayers = players
+        needsRefresh = false
+        return players
+    }
+}
+```
+
+### Coalescing Multiple Changes
+
+```swift
+let observation = DatabaseRegionObservation(tracking: Player.all())
+
+var updateTimer: Timer?
+
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { _ in },
+    onChange: {
+        // Coalesce rapid changes
+        updateTimer?.invalidate()
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+            refreshUI()
+        }
+    }
+)
+```
+
+### Custom Scheduling
+
+```swift
+let observation = DatabaseRegionObservation(tracking: Player.all())
+
+let queue = DispatchQueue(label: "updates")
+
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { _ in },
+    onChange: {
+        queue.async {
+            // Fetch and process on custom queue
+            self.fetchAndProcess()
+        }
+    }
+)
+```
+
+## Combining with ValueObservation
+
+Use both for different purposes:
+
+```swift
+// Automatic UI updates
+let valueObservation = ValueObservation.tracking { db in
+    try Player.fetchCount(db)
+}
+
+let valueCancellable = valueObservation.start(
+    in: dbQueue,
+    onError: { _ in },
+    onChange: { count in
+        updateCountLabel(count)
+    }
+)
+
+// Manual refresh trigger
+let regionObservation = DatabaseRegionObservation(tracking: Player.all())
+
+let regionCancellable = regionObservation.start(
+    in: dbQueue,
+    onError: { _ in },
+    onChange: {
+        showRefreshIndicator()
+    }
+)
+```
+
+## Performance Considerations
+
+<Tip>
+`DatabaseRegionObservation` has very low overhead - it only tracks changes without fetching data.
+</Tip>
+
+<Tip>
+Use narrow regions when possible to reduce unnecessary notifications:
+
+```swift
+// Better - only notified when score changes
+DatabaseRegionObservation(tracking: Player.select(Column("score")))
+
+// Less efficient - notified for any column change
+DatabaseRegionObservation(tracking: Player.all())
+```
+</Tip>
+
+## Limitations
+
+<Note>
+`DatabaseRegionObservation` does not provide the changed values. You must fetch them yourself when notified.
+</Note>
+
+<Note>
+Changes from external processes (other apps modifying the database) are not detected unless you use [`DatabasePool.invalidateReadOnlyConnections()`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databasepool/invalidatereadonlyconnections()).
+</Note>
+
+## Cancellation
+
+```swift
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { _ in },
+    onChange: { }
+)
+
+// Stop observing
+cancellable.cancel()
+```
+
+Observations are automatically cancelled when the cancellable is deallocated.
+
+## Error Handling
+
+```swift
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { error in
+        if let dbError = error as? DatabaseError {
+            print("Database error: \(dbError.message ?? "")")
+        }
+    },
+    onChange: {
+        // Handle change
+    }
+)
+```
+
+<Warning>
+When an error occurs, the observation stops and must be recreated.
+</Warning>
+
+## Related Topics
+
+- [`ValueObservation`](/api/value-observation) - High-level observation with automatic fetching
+- [TransactionObserver](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/transactionobserver) - Observing individual changes
+
+## See Also
+
+- [Database Observation](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databaseobservation)
+- [DatabaseRegion](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databaseregion)

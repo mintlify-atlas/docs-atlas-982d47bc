@@ -1,0 +1,662 @@
+---
+title: Associations
+description: Define and query relationships between record types in GRDB
+---
+
+Associations are connections between record types that mirror the foreign key relationships in your database schema. They enable efficient joins, prefetching, and filtering across related tables.
+
+## Why Use Associations?
+
+Without associations, loading related data requires multiple queries:
+
+```swift
+// Without associations: N+1 queries problem
+let books = try Book.fetchAll(db)
+let bookInfos = try books.map { book -> BookInfo in
+    let author = try Author.fetchOne(db, id: book.authorId) // One query per book!
+    return BookInfo(book: book, author: author)
+}
+```
+
+With associations, GRDB generates optimized SQL with joins:
+
+```swift
+// With associations: Single query
+struct BookInfo: Decodable, FetchableRecord {
+    var book: Book
+    var author: Author
+}
+
+let bookInfos = try Book
+    .including(required: Book.author)
+    .asRequest(of: BookInfo.self)
+    .fetchAll(db)
+// SELECT book.*, author.* 
+// FROM book 
+// JOIN author ON author.id = book.authorId
+```
+
+## Required Protocols
+
+To use associations, your record types must adopt:
+
+- **TableRecord** - Declares the database table name
+- **FetchableRecord** - Enables fetching records from the database  
+- **EncodableRecord** - Enables the `request(for:)` method for associated records
+
+```swift
+struct Author: Codable, FetchableRecord, PersistableRecord, TableRecord {
+    var id: Int64
+    var name: String
+}
+
+struct Book: Codable, FetchableRecord, PersistableRecord, TableRecord {
+    var id: Int64
+    var authorId: Int64
+    var title: String
+}
+```
+
+<Note>
+`PersistableRecord` includes `EncodableRecord` plus insertion/update/deletion methods.
+</Note>
+
+## Association Types
+
+GRDB provides five association types:
+
+<CardGroup cols={2}>
+  <Card title="BelongsTo" icon="arrow-left">
+    One-to-one: A book **belongs to** an author
+  </Card>
+  
+  <Card title="HasMany" icon="arrow-right">
+    One-to-many: An author **has many** books
+  </Card>
+  
+  <Card title="HasOne" icon="arrow-up">
+    One-to-one: A country **has one** demographics profile
+  </Card>
+  
+  <Card title="HasManyThrough" icon="arrows-split-up-and-left">
+    Many-to-many: A citizen **has many** countries through passports
+  </Card>
+  
+  <Card title="HasOneThrough" icon="arrow-turn-up">
+    One-to-one via join: A book **has one** return address through library
+  </Card>
+</CardGroup>
+
+## BelongsTo Association
+
+A **BelongsTo** association indicates that a record contains a foreign key pointing to another record.
+
+### Database Schema
+
+```swift
+migrator.registerMigration("Books and Authors") { db in
+    try db.create(table: "author") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.column("name", .text).notNull()
+    }
+    
+    try db.create(table: "book") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.belongsTo("author", onDelete: .cascade).notNull()
+        t.column("title", .text).notNull()
+    }
+}
+```
+
+This creates a `book.authorId` column with a foreign key to `author.id`.
+
+### Defining the Association
+
+```swift
+extension Book {
+    static let author = belongsTo(Author.self)
+}
+```
+
+### Using BelongsTo
+
+<Tabs>
+  <Tab title="Request for Associated Record">
+    ```swift
+    extension Book {
+        static let author = belongsTo(Author.self)
+        
+        var author: QueryInterfaceRequest<Author> {
+            request(for: Book.author)
+        }
+    }
+    
+    // Fetch the author of a book
+    let book: Book = ...
+    let author = try book.author.fetchOne(db) // Author?
+    ```
+  </Tab>
+  
+  <Tab title="Join and Prefetch">
+    ```swift
+    struct BookInfo: Decodable, FetchableRecord {
+        var book: Book
+        var author: Author
+    }
+    
+    let bookInfos = try Book
+        .including(required: Book.author)
+        .asRequest(of: BookInfo.self)
+        .fetchAll(db)
+    ```
+  </Tab>
+  
+  <Tab title="Filter by Associated Record">
+    ```swift
+    // Books by French authors
+    let books = try Book
+        .joining(required: Book.author
+            .filter { $0.country == "France" })
+        .fetchAll(db)
+    ```
+  </Tab>
+</Tabs>
+
+## HasMany Association
+
+A **HasMany** association indicates a one-to-many relationship, typically the inverse of a BelongsTo.
+
+### Defining the Association
+
+```swift
+extension Author {
+    static let books = hasMany(Book.self)
+}
+```
+
+### Using HasMany
+
+<Tabs>
+  <Tab title="Request for Associated Records">
+    ```swift
+    extension Author {
+        static let books = hasMany(Book.self)
+        
+        var books: QueryInterfaceRequest<Book> {
+            request(for: Author.books)
+        }
+    }
+    
+    // Fetch all books by an author
+    let author: Author = ...
+    let books = try author.books.fetchAll(db) // [Book]
+    
+    // Filter the associated books
+    let novels = try author.books
+        .filter { $0.genre == "novel" }
+        .order(\.$publishedAt.desc)
+        .fetchAll(db)
+    ```
+  </Tab>
+  
+  <Tab title="Prefetch Associated Records">
+    ```swift
+    struct AuthorInfo: Decodable, FetchableRecord {
+        var author: Author
+        var books: [Book]
+    }
+    
+    // Fetch authors with all their books
+    let authorInfos = try Author
+        .including(all: Author.books)
+        .asRequest(of: AuthorInfo.self)
+        .fetchAll(db)
+    // SELECT author.* FROM author
+    // SELECT book.* FROM book WHERE authorId IN (...)
+    ```
+  </Tab>
+  
+  <Tab title="Count Associated Records">
+    ```swift
+    // Annotate with book count
+    struct AuthorInfo: Decodable, FetchableRecord {
+        var author: Author
+        var bookCount: Int
+    }
+    
+    let authorInfos = try Author
+        .annotated(with: Author.books.count)
+        .asRequest(of: AuthorInfo.self)
+        .fetchAll(db)
+    ```
+  </Tab>
+</Tabs>
+
+## HasOne Association
+
+A **HasOne** association sets up a one-to-one connection, usually for denormalized data split across tables.
+
+### Database Schema
+
+```swift
+migrator.registerMigration("Countries") { db in
+    try db.create(table: "country") { t in
+        t.primaryKey("code", .text)
+        t.column("name", .text).notNull()
+    }
+    
+    try db.create(table: "demographics") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.belongsTo("country", onDelete: .cascade)
+            .notNull()
+            .unique()
+        t.column("population", .integer)
+        t.column("density", .double)
+    }
+}
+```
+
+### Defining the Association
+
+```swift
+extension Country {
+    static let demographics = hasOne(Demographics.self)
+}
+```
+
+### Using HasOne
+
+```swift
+struct CountryInfo: Decodable, FetchableRecord {
+    var country: Country
+    var demographics: Demographics?
+}
+
+let countryInfos = try Country
+    .including(optional: Country.demographics)
+    .asRequest(of: CountryInfo.self)
+    .fetchAll(db)
+```
+
+## HasManyThrough Association
+
+A **HasManyThrough** association sets up a many-to-many connection through an intermediate join table.
+
+### Many-to-Many Example
+
+```swift
+// Database schema
+migrator.registerMigration("Passports") { db in
+    try db.create(table: "country") { t in
+        t.primaryKey("code", .text)
+        t.column("name", .text)
+    }
+    
+    try db.create(table: "citizen") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.column("name", .text)
+    }
+    
+    try db.create(table: "passport") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.belongsTo("country", onDelete: .cascade).notNull()
+        t.belongsTo("citizen", onDelete: .cascade).notNull()
+        t.column("issueDate", .date)
+    }
+}
+
+// Associations
+struct Country: TableRecord {
+    static let passports = hasMany(Passport.self)
+    static let citizens = hasMany(
+        Citizen.self,
+        through: passports,
+        using: Passport.citizen
+    )
+}
+
+struct Passport: TableRecord {
+    static let country = belongsTo(Country.self)
+    static let citizen = belongsTo(Citizen.self)
+}
+
+struct Citizen: TableRecord {
+    static let passports = hasMany(Passport.self)
+    static let countries = hasMany(
+        Country.self,
+        through: passports,
+        using: Passport.country
+    )
+}
+```
+
+### Using HasManyThrough
+
+```swift
+struct CitizenInfo: Decodable, FetchableRecord {
+    var citizen: Citizen
+    var countries: [Country]
+}
+
+// Fetch citizens with their countries
+let citizenInfos = try Citizen
+    .including(all: Citizen.countries)
+    .asRequest(of: CitizenInfo.self)
+    .fetchAll(db)
+```
+
+### Nested Through Example
+
+```swift
+// Document has many sections, section has many paragraphs
+struct Document: TableRecord {
+    static let sections = hasMany(Section.self)
+    static let paragraphs = hasMany(
+        Paragraph.self,
+        through: sections,
+        using: Section.paragraphs
+    )
+}
+
+struct Section: TableRecord {
+    static let paragraphs = hasMany(Paragraph.self)
+}
+
+struct Paragraph: TableRecord { }
+
+// Fetch all paragraphs in a document
+let document: Document = ...
+let paragraphs = try document
+    .request(for: Document.paragraphs)
+    .fetchAll(db)
+```
+
+## HasOneThrough Association
+
+A **HasOneThrough** association sets up a one-to-one connection through an intermediate record.
+
+```swift
+// Database schema
+migrator.registerMigration("Libraries") { db in
+    try db.create(table: "library") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.column("name", .text)
+    }
+    
+    try db.create(table: "address") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.belongsTo("library").notNull().unique()
+        t.column("street", .text)
+    }
+    
+    try db.create(table: "book") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.belongsTo("library").notNull()
+        t.column("title", .text)
+    }
+}
+
+// Associations
+struct Book: TableRecord {
+    static let library = belongsTo(Library.self)
+    static let returnAddress = hasOne(
+        Address.self,
+        through: library,
+        using: Library.address
+    )
+}
+
+struct Library: TableRecord {
+    static let address = hasOne(Address.self)
+}
+
+struct Address: TableRecord { }
+
+// Fetch where to return the book
+let book: Book = ...
+let address = try book
+    .request(for: Book.returnAddress)
+    .fetchOne(db)
+```
+
+## Joining Methods
+
+Associations are used with joining methods that control how related records are fetched:
+
+### including(required:)
+
+Joins and includes the associated record. Excludes base records without a match (INNER JOIN).
+
+```swift
+struct BookInfo: Decodable, FetchableRecord {
+    var book: Book
+    var author: Author // Required, never nil
+}
+
+let bookInfos = try Book
+    .including(required: Book.author)
+    .asRequest(of: BookInfo.self)
+    .fetchAll(db)
+// SELECT book.*, author.*
+// FROM book
+// JOIN author ON author.id = book.authorId
+```
+
+### including(optional:)
+
+Joins and includes the associated record. Includes base records even without a match (LEFT JOIN).
+
+```swift
+struct BookInfo: Decodable, FetchableRecord {
+    var book: Book
+    var author: Author? // Optional, may be nil
+}
+
+let bookInfos = try Book
+    .including(optional: Book.author)
+    .asRequest(of: BookInfo.self)
+    .fetchAll(db)
+// SELECT book.*, author.*
+// FROM book
+// LEFT JOIN author ON author.id = book.authorId
+```
+
+### including(all:)
+
+Includes all associated records using a separate query.
+
+```swift
+struct AuthorInfo: Decodable, FetchableRecord {
+    var author: Author
+    var books: [Book]
+}
+
+let authorInfos = try Author
+    .including(all: Author.books)
+    .asRequest(of: AuthorInfo.self)
+    .fetchAll(db)
+// SELECT author.* FROM author
+// SELECT book.* FROM book WHERE authorId IN (...)
+```
+
+### joining(required:)
+
+Joins without including. Use for filtering by associated records.
+
+```swift
+// Books by French authors (don't fetch author)
+let books = try Book
+    .joining(required: Book.author
+        .filter { $0.country == "France" })
+    .fetchAll(db)
+// SELECT book.*
+// FROM book
+// JOIN author ON author.id = book.authorId
+//             AND author.country = 'France'
+```
+
+### joining(optional:)
+
+Left join without including. Rarely used alone.
+
+```swift
+let books = try Book
+    .joining(optional: Book.author)
+    .fetchAll(db)
+// SELECT book.*
+// FROM book
+// LEFT JOIN author ON author.id = book.authorId
+```
+
+### annotated(withRequired:)
+
+Joins and adds specific columns from associated record.
+
+```swift
+struct BookInfo: Decodable, FetchableRecord {
+    var book: Book
+    var authorName: String
+    var authorCountry: String
+}
+
+let bookInfos = try Book
+    .annotated(withRequired: Book.author.select(\.$name, \.$country))
+    .asRequest(of: BookInfo.self)
+    .fetchAll(db)
+// SELECT book.*, author.name, author.country
+// FROM book
+// JOIN author ON author.id = book.authorId
+```
+
+### annotated(withOptional:)
+
+Left join and adds specific columns (may be NULL).
+
+```swift
+struct BookInfo: Decodable, FetchableRecord {
+    var book: Book
+    var authorName: String?
+}
+
+let bookInfos = try Book
+    .annotated(withOptional: Book.author.select(\.$name))
+    .asRequest(of: BookInfo.self)
+    .fetchAll(db)
+```
+
+## Filtering by Associations
+
+Filter records based on properties of associated records:
+
+```swift
+// Books by authors from France
+let books = try Book
+    .joining(required: Book.author
+        .filter { $0.country == "France" })
+    .fetchAll(db)
+
+// Authors with more than 10 books
+let prolificAuthors = try Author
+    .having(Author.books.count > 10)
+    .fetchAll(db)
+
+// Books with no reviews
+let unreviewedBooks = try Book
+    .joining(optional: Book.reviews)
+    .filter { $0.reviews.isEmpty }
+    .fetchAll(db)
+```
+
+## Association Aggregates
+
+Compute aggregates on associated records:
+
+```swift
+struct AuthorInfo: Decodable, FetchableRecord {
+    var author: Author
+    var bookCount: Int
+    var avgScore: Double?
+}
+
+let authorInfos = try Author
+    .annotated(with: Author.books.count)
+    .annotated(with: Author.books.average(\.$score))
+    .asRequest(of: AuthorInfo.self)
+    .fetchAll(db)
+```
+
+Available aggregates:
+- `count` - Count associated records
+- `isEmpty` - Check if no associated records exist
+- `min(column)` - Minimum value
+- `max(column)` - Maximum value
+- `average(column)` - Average value
+- `sum(column)` - Sum of values
+
+## Combining Associations
+
+Combine multiple associations in one request:
+
+```swift
+struct BookInfo: Decodable, FetchableRecord {
+    var book: Book
+    var author: Author
+    var reviews: [Review]
+}
+
+// Parallel associations
+let bookInfos = try Book
+    .including(required: Book.author)
+    .including(all: Book.reviews)
+    .asRequest(of: BookInfo.self)
+    .fetchAll(db)
+
+// Chained associations
+struct BookInfo2: Decodable, FetchableRecord {
+    var book: Book
+    var author: Author
+    var authorCountry: Country
+}
+
+let bookInfos2 = try Book
+    .including(required: Book.author
+        .including(required: Author.country))
+    .asRequest(of: BookInfo2.self)
+    .fetchAll(db)
+```
+
+## Custom Foreign Keys
+
+When your schema doesn't follow conventions or has multiple foreign keys:
+
+```swift
+struct Book: TableRecord {
+    enum Columns {
+        static let authorId = Column("authorId")
+        static let translatorId = Column("translatorId")
+    }
+    
+    static let authorForeignKey = ForeignKey([Columns.authorId])
+    static let translatorForeignKey = ForeignKey([Columns.translatorId])
+    
+    static let author = belongsTo(Person.self, using: authorForeignKey)
+    static let translator = belongsTo(Person.self, using: translatorForeignKey)
+}
+
+struct Person: TableRecord {
+    static let writtenBooks = hasMany(Book.self, using: Book.authorForeignKey)
+    static let translatedBooks = hasMany(Book.self, using: Book.translatorForeignKey)
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="SQL Interpolation" href="/query-interface/sql-interpolation" icon="brackets-curly">
+    Mix type-safe SQL with associations
+  </Card>
+  
+  <Card title="Migrations" href="/advanced/migrations" icon="database">
+    Learn how to define foreign keys in migrations
+  </Card>
+</CardGroup>

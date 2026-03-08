@@ -1,0 +1,257 @@
+---
+title: "DatabaseQueue"
+description: "A single-connection SQLite database for serial access"
+---
+
+`DatabaseQueue` provides a single database connection that serializes all database accesses. It's the simplest way to access an SQLite database with GRDB.
+
+## Overview
+
+`DatabaseQueue` opens a single connection to an SQLite database. All database operations are executed serially on a private dispatch queue.
+
+```swift
+let dbQueue = try DatabaseQueue(path: "/path/to/database.sqlite")
+```
+
+Use `DatabaseQueue` when you need:
+- Simple, serial database access
+- A single-connection database
+- Testing with in-memory databases
+
+For concurrent read access with a pool of connections, use [`DatabasePool`](/api/database-pool).
+
+## Initialization
+
+### Opening a Database File
+
+<ParamField path="path" type="String" required>
+  The path to the database file
+</ParamField>
+
+<ParamField path="configuration" type="Configuration" default="Configuration()">
+  Optional database configuration
+</ParamField>
+
+```swift
+let dbQueue = try DatabaseQueue(path: "/path/to/database.sqlite")
+
+// With configuration
+var config = Configuration()
+config.readonly = true
+let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+```
+
+### Creating an In-Memory Database
+
+<ParamField path="named" type="String?" default="nil">
+  Optional name for a shared in-memory database
+</ParamField>
+
+```swift
+// Independent in-memory database
+let dbQueue = try DatabaseQueue()
+
+// Shared in-memory database
+let dbQueue = try DatabaseQueue(named: "myDatabase")
+```
+
+## Properties
+
+<ResponseField name="configuration" type="Configuration">
+  The database configuration
+</ResponseField>
+
+<ResponseField name="path" type="String">
+  The path to the database file
+</ResponseField>
+
+## Reading from the Database
+
+### read(_:)
+
+Synchronously reads from the database.
+
+<ParamField path="value" type="(Database) throws -> T" required>
+  A closure that accesses the database
+</ParamField>
+
+```swift
+let playerCount = try dbQueue.read { db in
+    try Player.fetchCount(db)
+}
+```
+
+### asyncRead(_:)
+
+Asynchronously reads from the database.
+
+```swift
+dbQueue.asyncRead { result in
+    switch result {
+    case .success(let db):
+        let players = try Player.fetchAll(db)
+        // Use players
+    case .failure(let error):
+        // Handle error
+    }
+}
+```
+
+### unsafeRead(_:)
+
+Reads from the database without wrapping in a transaction.
+
+<Warning>
+This method is unsafe because the database may be changed by concurrent writes. Use with caution.
+</Warning>
+
+```swift
+let value = try dbQueue.unsafeRead { db in
+    try Player.fetchOne(db, key: 1)
+}
+```
+
+## Writing to the Database
+
+### write(_:)
+
+Synchronously writes to the database in an implicit transaction.
+
+<ParamField path="updates" type="(Database) throws -> T" required>
+  A closure that updates the database
+</ParamField>
+
+```swift
+try dbQueue.write { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    try Player.filter(Column("score") < 50).deleteAll(db)
+}
+```
+
+<Note>
+If the closure throws an error, the transaction is rolled back and the error is rethrown.
+</Note>
+
+### inTransaction(_:_:)
+
+Executes operations in an explicit transaction.
+
+<ParamField path="kind" type="Database.TransactionKind?" default="nil">
+  The transaction type (DEFERRED, IMMEDIATE, or EXCLUSIVE)
+</ParamField>
+
+<ParamField path="updates" type="(Database) throws -> Database.TransactionCompletion" required>
+  A closure that performs database operations
+</ParamField>
+
+```swift
+try dbQueue.inTransaction { db in
+    try Player(name: "Arthur").insert(db)
+    try Player(name: "Barbara").insert(db)
+    return .commit // or .rollback
+}
+```
+
+### writeWithoutTransaction(_:)
+
+Executes database operations without an implicit transaction.
+
+<Warning>
+Database operations can see changes from concurrent writes. Two identical requests may not return the same value.
+</Warning>
+
+```swift
+try dbQueue.writeWithoutTransaction { db in
+    try Player(name: "Arthur").insert(db)
+    let count = try Player.fetchCount(db)
+}
+```
+
+## Async/Await Support
+
+```swift
+// Async read
+let players = try await dbQueue.read { db in
+    try Player.fetchAll(db)
+}
+
+// Async write
+try await dbQueue.write { db in
+    try Player(name: "Arthur").insert(db)
+}
+```
+
+## Memory Management
+
+### releaseMemory()
+
+Frees as much memory as possible.
+
+```swift
+dbQueue.releaseMemory()
+```
+
+<Tip>
+On iOS, GRDB automatically releases memory when receiving memory warnings or when the app enters the background.
+</Tip>
+
+## Database Interruption
+
+### interrupt()
+
+Cancels any running database statement.
+
+```swift
+dbQueue.interrupt()
+```
+
+<Note>
+The database connection is not closed. Interrupted operations throw a `DatabaseError` with code `SQLITE_INTERRUPT`.
+</Note>
+
+## Closing the Database
+
+### close()
+
+Closes the database connection.
+
+```swift
+try dbQueue.close()
+```
+
+<Warning>
+Once closed, the database queue cannot be reopened. Create a new instance instead.
+</Warning>
+
+## Temporary Database Copies
+
+### inMemoryCopy(fromPath:configuration:)
+
+Creates an in-memory copy of a database file.
+
+```swift
+let dbQueue = try DatabaseQueue.inMemoryCopy(
+    fromPath: "/path/to/database.sqlite"
+)
+```
+
+### temporaryCopy(fromPath:configuration:)
+
+Creates a temporary on-disk copy that is automatically deleted when closed.
+
+```swift
+let dbQueue = try DatabaseQueue.temporaryCopy(
+    fromPath: "/path/to/database.sqlite"
+)
+```
+
+## Related Types
+
+- [`DatabasePool`](/api/database-pool) - Multi-connection database with concurrent reads
+- [`Database`](/api/database) - Low-level database connection
+- [`Configuration`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/configuration) - Database configuration options
+
+## See Also
+
+- [Database Connections](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databaseconnections)
+- [Concurrency Guide](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/concurrency)

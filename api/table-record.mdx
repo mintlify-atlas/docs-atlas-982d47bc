@@ -1,0 +1,448 @@
+---
+title: "TableRecord"
+description: "Protocol for types tied to a database table with query building support"
+---
+
+`TableRecord` associates a Swift type with a database table and provides query interface methods for building SQL queries.
+
+## Overview
+
+Conform to `TableRecord` to unlock the query interface:
+
+```swift
+struct Player: TableRecord {
+    static let databaseTableName = "player"
+}
+
+// Query interface is now available
+let players = try Player.filter(Column("score") > 1000).fetchAll(db)
+```
+
+<Tip>
+Combine `TableRecord` with [`FetchableRecord`](/api/fetchable-record) and [`PersistableRecord`](/api/persistable-record) for a complete record type.
+</Tip>
+
+## Conforming to TableRecord
+
+### Specifying the Table Name
+
+<ParamField path="databaseTableName" type="String" required>
+  The name of the database table
+</ParamField>
+
+```swift
+struct Player: TableRecord {
+    static let databaseTableName = "player"
+}
+```
+
+The default table name is derived from the type name:
+- `Player` → `"player"`
+- `PostalAddress` → `"postalAddress"`
+- `HTTPRequest` → `"httpRequest"`
+
+### Defining Columns
+
+Define a `Columns` type for type-safe column references:
+
+```swift
+struct Player: TableRecord {
+    static let databaseTableName = "player"
+    
+    enum Columns {
+        static let id = Column("id")
+        static let name = Column("name")
+        static let score = Column("score")
+    }
+}
+```
+
+For Codable types, derive columns from `CodingKeys`:
+
+```swift
+struct Player: TableRecord, Codable {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    enum Columns {
+        static let id = Column(CodingKeys.id)
+        static let name = Column(CodingKeys.name)
+        static let score = Column(CodingKeys.score)
+    }
+}
+```
+
+### Customizing Selection
+
+<ParamField path="databaseSelection" type="[any SQLSelectable]" default="[.allColumns]">
+  The columns selected by default
+</ParamField>
+
+```swift
+struct Player: TableRecord {
+    static let databaseTableName = "player"
+    
+    // Select only id and name by default
+    static var databaseSelection: [any SQLSelectable] {
+        [Columns.id, Columns.name]
+    }
+    
+    enum Columns {
+        static let id = Column("id")
+        static let name = Column("name")
+        static let score = Column("score")
+    }
+}
+```
+
+## Query Interface Methods
+
+### Fetching All Records
+
+```swift
+// SELECT * FROM player
+let players = try Player.all().fetchAll(db)
+```
+
+### Filtering
+
+```swift
+// SELECT * FROM player WHERE score > 1000
+let topPlayers = try Player
+    .filter(Column("score") > 1000)
+    .fetchAll(db)
+
+// Using column enum
+let topPlayers = try Player
+    .filter(Player.Columns.score > 1000)
+    .fetchAll(db)
+
+// Using key paths (when DatabaseComponents is defined)
+let topPlayers = try Player
+    .filter { $0.score > 1000 }
+    .fetchAll(db)
+```
+
+### Ordering
+
+```swift
+// SELECT * FROM player ORDER BY score DESC
+let players = try Player
+    .order(Column("score").desc)
+    .fetchAll(db)
+
+// Multiple orderings
+let players = try Player
+    .order(Column("score").desc, Column("name"))
+    .fetchAll(db)
+
+// Using key paths
+let players = try Player
+    .order { [$0.score.desc, $0.name] }
+    .fetchAll(db)
+```
+
+### Limiting Results
+
+```swift
+// SELECT * FROM player LIMIT 10
+let players = try Player.limit(10).fetchAll(db)
+
+// With offset
+// SELECT * FROM player LIMIT 10 OFFSET 20
+let players = try Player.limit(10, offset: 20).fetchAll(db)
+```
+
+### Selecting Specific Columns
+
+```swift
+// SELECT id, name FROM player
+let request = Player.select(Column("id"), Column("name"))
+
+// Using key paths
+let request = Player.select { [$0.id, $0.name] }
+```
+
+### Joining Tables
+
+Define associations first:
+
+```swift
+struct Player: TableRecord {
+    static let team = belongsTo(Team.self)
+}
+
+struct Team: TableRecord {
+    static let players = hasMany(Player.self)
+}
+
+// JOIN team ON team.id = player.teamId
+let request = Player.joining(required: Player.team)
+
+// Include associated records
+let request = Player.including(required: Player.team)
+```
+
+### Aggregates
+
+```swift
+// SELECT COUNT(*) FROM player
+let count = try Player.fetchCount(db)
+
+// SELECT MAX(score) FROM player
+let maxScore = try Player
+    .select(max(Column("score")), as: Int.self)
+    .fetchOne(db)
+
+// SELECT AVG(score) FROM player
+let avgScore = try Player
+    .select(average(Column("score")), as: Double.self)
+    .fetchOne(db)
+```
+
+### Grouping
+
+```swift
+// SELECT teamId, COUNT(*) FROM player GROUP BY teamId
+let request = Player
+    .select(Column("teamId"), count(Column("id")))
+    .group(Column("teamId"))
+```
+
+### DISTINCT
+
+```swift
+// SELECT DISTINCT name FROM player
+let names = try Player
+    .select(Column("name"))
+    .distinct()
+    .fetchAll(db)
+```
+
+## Fetching by Primary Key
+
+### Single Primary Key
+
+```swift
+// SELECT * FROM player WHERE id = 1
+let player = try Player.fetchOne(db, key: 1)
+
+// Multiple keys
+let players = try Player.fetchAll(db, keys: [1, 2, 3])
+```
+
+### With Identifiable
+
+```swift
+struct Player: TableRecord, Identifiable {
+    var id: Int64
+}
+
+let player = try Player.fetchOne(db, id: 1)
+let players = try Player.fetchAll(db, ids: [1, 2, 3])
+```
+
+### find Method
+
+Throws if record not found:
+
+```swift
+let player = try Player.find(db, key: 1) // Throws if not found
+```
+
+## Updating Records
+
+### Batch Updates
+
+```swift
+// UPDATE player SET score = 0
+try Player.updateAll(db) { player in
+    [player.score.set(to: 0)]
+}
+
+// UPDATE player SET score = 0 WHERE score < 100
+try Player
+    .filter { $0.score < 100 }
+    .updateAll(db) { player in
+        [player.score.set(to: 0)]
+    }
+```
+
+## Deleting Records
+
+### Delete All
+
+```swift
+// DELETE FROM player
+try Player.deleteAll(db)
+
+// DELETE FROM player WHERE score < 100
+try Player.filter(Column("score") < 100).deleteAll(db)
+```
+
+### Delete by Primary Key
+
+```swift
+// DELETE FROM player WHERE id = 1
+try Player.deleteOne(db, key: 1)
+
+// DELETE FROM player WHERE id IN (1, 2, 3)
+try Player.deleteAll(db, keys: [1, 2, 3])
+```
+
+## Checking Existence
+
+### exists(_:key:)
+
+```swift
+let exists = try Player.exists(db, key: 1)
+```
+
+### With Identifiable
+
+```swift
+struct Player: TableRecord, Identifiable {
+    var id: Int64
+}
+
+let exists = try Player.exists(db, id: 1)
+```
+
+## Counting Records
+
+### fetchCount(_:)
+
+```swift
+// SELECT COUNT(*) FROM player
+let count = try Player.fetchCount(db)
+
+// With filter
+let count = try Player.filter(Column("score") > 1000).fetchCount(db)
+```
+
+## Associations
+
+Define relationships between tables:
+
+### belongsTo
+
+```swift
+struct Player: TableRecord {
+    static let team = belongsTo(Team.self)
+}
+```
+
+### hasMany
+
+```swift
+struct Team: TableRecord {
+    static let players = hasMany(Player.self)
+}
+```
+
+### hasOne
+
+```swift
+struct Country: TableRecord {
+    static let capital = hasOne(City.self)
+}
+```
+
+See the [`associations`](/api/associations) documentation for more details.
+
+## Advanced Selection
+
+### Annotations
+
+Add calculated columns:
+
+```swift
+let request = Player.annotated(with: {
+    ($0.score * 2).forKey("doubleScore")
+})
+```
+
+### Aliasing
+
+```swift
+let playerAlias = TableAlias(name: "p")
+let request = Player.aliased(playerAlias)
+```
+
+## Common Table Expressions (CTEs)
+
+```swift
+let cte = CommonTableExpression(
+    named: "avgScore",
+    sql: "SELECT AVG(score) AS value FROM player"
+)
+
+let request = Player
+    .with(cte)
+    .filter(sql: "score > (SELECT value FROM avgScore)")
+```
+
+## SQL Interpolation
+
+```swift
+let minScore = 1000
+let request = Player.filter(literal: "score > \(minScore)")
+
+let name = "Arthur"
+let request = Player.filter(sql: "name = ?", arguments: [name])
+```
+
+## Column Counting
+
+### numberOfSelectedColumns(_:)
+
+```swift
+let count = try Player.numberOfSelectedColumns(db)
+```
+
+## Errors
+
+### recordNotFound(_:key:)
+
+Creates a `RecordError` for a missing record:
+
+```swift
+let error = Player.recordNotFound(db, key: 999)
+throw error
+```
+
+## Performance Tips
+
+<Tip>
+Define indexes for columns used in WHERE clauses:
+
+```swift
+try db.create(index: "player_on_score", on: "player", columns: ["score"])
+```
+</Tip>
+
+<Tip>
+Use `select` to fetch only needed columns:
+
+```swift
+// Only fetches id and name
+let request = Player.select(Column("id"), Column("name"))
+```
+</Tip>
+
+<Warning>
+Avoid fetching large result sets without limiting. Use `limit()` or cursors for better memory usage.
+</Warning>
+
+## Related Protocols
+
+- [`FetchableRecord`](/api/fetchable-record) - Decoding records from rows
+- [`PersistableRecord`](/api/persistable-record) - Persisting records
+- [`Association`](/api/associations) - Defining table relationships
+
+## See Also
+
+- [Query Interface](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/queryinterface)
+- [Records Documentation](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/records)
+- [Associations](/api/associations)

@@ -1,0 +1,313 @@
+---
+title: Custom SQLite Builds
+description: Build GRDB with a customized SQLite version
+---
+
+By default, GRDB uses the version of SQLite that ships with the target operating system. You can build GRDB with a custom build of SQLite 3.47.2 to activate extra features.
+
+## Why Use a Custom Build?
+
+A custom SQLite build enables:
+
+- **FTS5 full-text search** (on platforms where it's not available by default)
+- **Pre-update hooks** for advanced transaction observation
+- **SQLite extensions** not enabled in the system version
+- **Newer SQLite features** before they ship in the OS
+- **Performance optimizations** through compiler flags
+
+<Note>
+GRDB builds SQLite using [swiftlyfalling/SQLiteLib](https://github.com/swiftlyfalling/SQLiteLib), which uses the same configuration as Apple's SQLite builds.
+</Note>
+
+<Warning>
+The technique described here is **not compatible with Swift Package Manager (SPM)**. It will create [build issues](https://github.com/groue/GRDB.swift/issues/1709) with SPM companion libraries such as [GRDBQuery](https://github.com/groue/GRDBQuery) or [GRDBSnapshotTesting](https://github.com/groue/GRDBSnapshotTesting).
+</Warning>
+
+## Installation Steps
+
+### 1. Clone and Checkout GRDB
+
+Clone the GRDB repository and checkout the latest version:
+
+```bash
+cd [GRDB directory]
+git checkout [latest tag]
+git submodule update --init SQLiteCustom/src
+```
+
+### 2. Choose Compilation Options
+
+Select the [SQLite compilation options](https://www.sqlite.org/compile.html) you need. Common options include:
+
+- `SQLITE_ENABLE_FTS5` - Full-text search
+- `SQLITE_ENABLE_PREUPDATE_HOOK` - Pre-update hooks
+- `SQLITE_ENABLE_SNAPSHOT` - Snapshot support (recommended)
+- `SQLITE_ENABLE_RTREE` - R*Tree index
+- `SQLITE_ENABLE_JSON1` - JSON functions
+
+<Tip>
+It's recommended to enable `SQLITE_ENABLE_SNAPSHOT`. This allows GRDB to optimize `ValueObservation` when using a `DatabasePool`.
+</Tip>
+
+### 3. Create GRDBCustomSQLite Folder
+
+Create a folder named `GRDBCustomSQLite` somewhere in your project directory:
+
+```bash
+mkdir GRDBCustomSQLite
+```
+
+### 4. Create Configuration Files
+
+Create four files in the `GRDBCustomSQLite` folder:
+
+#### SQLiteLib-USER.xcconfig
+
+Sets extra SQLite compilation flags:
+
+```xcconfig
+// As many -D options as there are custom SQLite compilation options
+// Note: there is no space between -D and the option name.
+CUSTOM_SQLLIBRARY_CFLAGS = -DSQLITE_ENABLE_SNAPSHOT -DSQLITE_ENABLE_FTS5
+```
+
+#### GRDBCustomSQLite-USER.xcconfig
+
+Lets GRDB know about extra compilation flags:
+
+```xcconfig
+// As many -D options as there are custom SQLite compilation options  
+// Note: there is one space between -D and the option name.
+CUSTOM_OTHER_SWIFT_FLAGS = -D SQLITE_ENABLE_SNAPSHOT -D SQLITE_ENABLE_FTS5
+```
+
+#### GRDBCustomSQLite-USER.h
+
+Lets your application know about extra compilation flags:
+
+```c
+// As many #define as there are custom SQLite compilation options
+#define SQLITE_ENABLE_SNAPSHOT
+#define SQLITE_ENABLE_FTS5
+```
+
+#### GRDBCustomSQLite-INSTALL.sh
+
+Installs the three configuration files:
+
+```sh
+# License: MIT License
+# https://github.com/swiftlyfalling/SQLiteLib/blob/master/LICENSE
+
+#######################################################
+#                   PROJECT PATHS
+#  !! MODIFY THESE TO MATCH YOUR PROJECT HIERARCHY !!
+#######################################################
+
+# The path to the folder containing GRDBCustom.xcodeproj:
+GRDB_SOURCE_PATH="${PROJECT_DIR}/GRDB"
+
+# The path to your custom "SQLiteLib-USER.xcconfig":
+SQLITELIB_XCCONFIG_USER_PATH="${PROJECT_DIR}/GRDBCustomSQLite/SQLiteLib-USER.xcconfig"
+
+# The path to your custom "GRDBCustomSQLite-USER.xcconfig":
+CUSTOMSQLITE_XCCONFIG_USER_PATH="${PROJECT_DIR}/GRDBCustomSQLite/GRDBCustomSQLite-USER.xcconfig"
+
+# The path to your custom "GRDBCustomSQLite-USER.h":
+CUSTOMSQLITE_H_USER_PATH="${PROJECT_DIR}/GRDBCustomSQLite/GRDBCustomSQLite-USER.h"
+
+#######################################################
+
+if [ ! -d "$GRDB_SOURCE_PATH" ];
+then
+echo "error: Path to GRDB source (GRDB_SOURCE_PATH) missing/incorrect: $GRDB_SOURCE_PATH"
+exit 1
+fi
+
+SyncFileChanges () {
+    SOURCE=$1
+    DESTINATIONPATH=$2
+    DESTINATIONFILENAME=$3
+    DESTINATION="${DESTINATIONPATH}/${DESTINATIONFILENAME}"
+
+    if [ ! -f "$SOURCE" ];
+    then
+    echo "error: Source file missing: $SOURCE"
+    exit 1
+    fi
+
+    rsync -a "$SOURCE" "$DESTINATION"
+}
+
+SyncFileChanges $SQLITELIB_XCCONFIG_USER_PATH "${GRDB_SOURCE_PATH}/SQLiteCustom/src" "SQLiteLib-USER.xcconfig"
+SyncFileChanges $CUSTOMSQLITE_XCCONFIG_USER_PATH "${GRDB_SOURCE_PATH}/SQLiteCustom" "GRDBCustomSQLite-USER.xcconfig"
+SyncFileChanges $CUSTOMSQLITE_H_USER_PATH "${GRDB_SOURCE_PATH}/SQLiteCustom" "GRDBCustomSQLite-USER.h"
+
+echo "Finished syncing"
+```
+
+<Warning>
+Modify the paths at the top of `GRDBCustomSQLite-INSTALL.sh` to match your project structure.
+</Warning>
+
+### 5. Embed GRDBCustom Project
+
+Embed the `GRDBCustom.xcodeproj` project in your own project.
+
+### 6. Add Target Dependencies
+
+Add the `GRDBCustom` target in the **Target Dependencies** section of the **Build Phases** tab of your application target.
+
+### 7. Embed the Framework
+
+Add `GRDBCustom.framework` from the targeted platform to the **Embedded Binaries** section of the **General** tab of your application target.
+
+### 8. Add Build Pre-Action
+
+Add a Run Script phase in the **Pre-actions** section of the **Build** tab of your application scheme:
+
+```sh
+source "${PROJECT_DIR}/GRDBCustomSQLite/GRDBCustomSQLite-INSTALL.sh"
+```
+
+The path should match the location of your `GRDBCustomSQLite-INSTALL.sh` file.
+
+Select your application target in the "Provide build settings from" menu.
+
+### 9. Share Your Scheme
+
+Check the **Shared** checkbox of your application scheme. This allows you to commit the pre-action in your version control system.
+
+### 10. Configure Hardened Runtime (if needed)
+
+If you have enabled "Hardened Runtime" for your target:
+
+1. Go to the **Signing & Capabilities** tab
+2. Under **Hardened Runtime**, check **Disable Library Validation**
+
+Without this exception, you may see: "Library not loaded ... different Team IDs"
+
+## Using Your Custom Build
+
+Once configured, use GRDB normally:
+
+```swift
+import GRDB
+
+let dbQueue = try DatabaseQueue(path: "/path/to/database.sqlite")
+
+// Use enabled features
+try dbQueue.write { db in
+    // FTS5 full-text search
+    try db.create(virtualTable: "documents", using: FTS5()) { t in
+        t.column("content")
+    }
+}
+```
+
+## Verifying Enabled Features
+
+Check which features are enabled:
+
+```swift
+try dbQueue.read { db in
+    // Check FTS5
+    let hasFTS5 = try Bool.fetchOne(db, 
+        sql: "SELECT COUNT(*) > 0 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'")
+    print("FTS5 enabled: \(hasFTS5 ?? false)")
+    
+    // Check all compile options
+    let options = try String.fetchAll(db, 
+        sql: "SELECT compile_options FROM pragma_compile_options")
+    print("SQLite compile options: \(options)")
+}
+```
+
+## Common Compilation Options
+
+### Full-Text Search
+
+```xcconfig
+CUSTOM_SQLLIBRARY_CFLAGS = -DSQLITE_ENABLE_FTS5
+```
+
+Enables the [FTS5 extension](/full-text-search/overview) for full-text search.
+
+### Pre-Update Hooks
+
+```xcconfig
+CUSTOM_SQLLIBRARY_CFLAGS = -DSQLITE_ENABLE_PREUPDATE_HOOK
+```
+
+Enables pre-update hooks for advanced transaction observation.
+
+### Snapshot Support
+
+```xcconfig
+CUSTOM_SQLLIBRARY_CFLAGS = -DSQLITE_ENABLE_SNAPSHOT
+```
+
+Recommended for `DatabasePool` performance optimization.
+
+### R*Tree Index
+
+```xcconfig
+CUSTOM_SQLLIBRARY_CFLAGS = -DSQLITE_ENABLE_RTREE
+```
+
+Enables spatial indexing with R*Tree.
+
+### Multiple Options
+
+Combine multiple options:
+
+```xcconfig
+CUSTOM_SQLLIBRARY_CFLAGS = -DSQLITE_ENABLE_SNAPSHOT -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_RTREE
+```
+
+## Troubleshooting
+
+### Build Errors with SPM Libraries
+
+Custom SQLite builds are incompatible with Swift Package Manager. If you use GRDBQuery or other SPM libraries:
+
+- Consider using the system SQLite instead
+- Or avoid SPM dependencies that require GRDB
+
+### "Library not loaded" Error
+
+If you see "Library not loaded ... different Team IDs":
+
+1. Enable "Hardened Runtime" settings
+2. Check "Disable Library Validation"
+
+### Pre-Action Script Not Running
+
+If the install script doesn't run:
+
+1. Verify the script path is correct
+2. Make sure you selected your target in "Provide build settings from"
+3. Check that your scheme is marked as "Shared"
+
+### Wrong SQLite Version
+
+If you're still using the system SQLite:
+
+1. Verify you're linking `GRDBCustom.framework`, not `GRDB.framework`
+2. Clean your build folder (Product > Clean Build Folder)
+3. Check that the pre-action script ran successfully
+
+## Best Practices
+
+1. **Document your options** - Keep a list of enabled SQLite features
+2. **Test thoroughly** - Custom builds may behave differently
+3. **Update carefully** - New GRDB versions may change requirements
+4. **Share your scheme** - Let team members use the same configuration
+5. **Enable SQLITE_ENABLE_SNAPSHOT** - Improves DatabasePool performance
+6. **Verify at runtime** - Check that expected features are available
+
+## See Also
+
+- [Full-Text Search](/full-text-search/overview) - Using FTS5
+- [Encryption](/guides/encryption) - SQLCipher integration
+- [Transaction Observers](/advanced/transaction-observers) - Pre-update hooks

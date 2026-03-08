@@ -1,0 +1,473 @@
+---
+title: Concurrency
+description: Multi-threaded database access with DatabaseQueue and DatabasePool
+---
+
+**GRDB helps your app deal with Swift and SQLite concurrency.** Access the database from any thread while maintaining data integrity and avoiding conflicts.
+
+## Concurrency Rules
+
+<Warning>
+**Follow these two rules to ensure data integrity and avoid concurrency issues.**
+</Warning>
+
+### Rule 1: Connect Once Per Database File
+
+Open **one single** `DatabaseQueue` or `DatabasePool` per database file for the entire duration of your use:
+
+```swift
+// Application setup
+class AppDatabase {
+    static let shared = AppDatabase()
+    let dbQueue: DatabaseQueue
+    
+    private init() {
+        let dbPath = /* ... */
+        dbQueue = try! DatabaseQueue(path: dbPath)
+    }
+}
+
+// Use throughout app
+let players = try AppDatabase.shared.dbQueue.read { db in
+    try Player.fetchAll(db)
+}
+```
+
+**Why this matters:**
+- Prevents `SQLITE_BUSY` errors from parallel writes
+- Enables database observation features
+- Ensures proper write serialization
+
+### Rule 2: Mind Your Transactions
+
+Group related operations in transactions to protect database invariants:
+
+```swift
+// CORRECT: Transaction ensures both operations complete together
+try dbQueue.write { db in
+    try Account.debit(db, amount: 100)
+    try Account.credit(db, amount: 100)
+}
+
+// INCORRECT: Operations could be interleaved with other writes
+try dbQueue.writeWithoutTransaction { db in
+    try Account.debit(db, amount: 100)
+}
+try dbQueue.writeWithoutTransaction { db in
+    try Account.credit(db, amount: 100)  // Another thread could write here!
+}
+```
+
+**Why this matters:**
+- Guarantees all-or-nothing commits
+- Provides stable, immutable views during reads
+- Prevents partial updates that violate constraints
+
+## Database Access Types
+
+GRDB provides two database connection types:
+
+### DatabaseQueue
+
+A single database connection that serializes all accesses:
+
+```swift
+let dbQueue = try DatabaseQueue(path: "/path/to/database.sqlite")
+```
+
+**Characteristics:**
+- Single SQLite connection
+- All reads and writes are serialized
+- Simple, predictable behavior
+- Best for most applications
+
+**When to use:**
+- Default choice for new projects
+- Apps with moderate database load
+- Testing and development
+- When simplicity is preferred
+
+### DatabasePool
+
+Multiple database connections enabling concurrent reads:
+
+```swift
+let dbPool = try DatabasePool(path: "/path/to/database.sqlite")
+```
+
+**Characteristics:**
+- Multiple SQLite connections
+- Concurrent reads while writing
+- Requires [WAL mode](https://www.sqlite.org/wal.html)
+- More complex behavior
+
+**When to use:**
+- High-read, moderate-write workloads
+- Long-running read queries
+- Need responsive UI during slow writes
+- Advanced performance optimization
+
+<Info>
+**Not sure which to choose?** Start with `DatabaseQueue`. You can always switch to `DatabasePool` later if needed.
+</Info>
+
+## Synchronous Access
+
+Block the current thread until database operations complete:
+
+```swift
+// Read access
+let playerCount = try dbQueue.read { db in
+    try Player.fetchCount(db)
+}
+
+// Write access
+let newPlayerCount = try dbQueue.write { db -> Int in
+    try Player(name: "Alice").insert(db)
+    return try Player.fetchCount(db)
+}
+```
+
+<Warning>
+**Never perform nested database accesses:**
+```swift
+try dbQueue.write { db in
+    // Fatal Error: Database methods are not reentrant
+    try dbQueue.write { db in ... }
+}
+```
+</Warning>
+
+## Asynchronous Access
+
+Access the database without blocking the current thread:
+
+### Swift Concurrency (async/await)
+
+```swift
+// Async read
+let playerCount = try await dbQueue.read { db in
+    try Player.fetchCount(db)
+}
+
+// Async write
+let newPlayerCount = try await dbQueue.write { db -> Int in
+    try Player(name: "Alice").insert(db)
+    return try Player.fetchCount(db)
+}
+```
+
+<Note>
+Async database methods honor task cancellation. Cancelled tasks throw `CancellationError` and roll back any open transaction.
+</Note>
+
+### Completion Handlers
+
+```swift
+dbQueue.asyncRead { result in
+    switch result {
+    case .success(let db):
+        let count = try! Player.fetchCount(db)
+        print("Players: \(count)")
+    case .failure(let error):
+        print("Error: \(error)")
+    }
+}
+
+dbQueue.asyncWrite({ db in
+    try Player(name: "Bob").insert(db)
+}, completion: { result in
+    switch result {
+    case .success:
+        print("Player inserted")
+    case .failure(let error):
+        print("Error: \(error)")
+    }
+})
+```
+
+## Safe vs. Unsafe Access
+
+GRDB provides "safe" methods that enforce concurrency guarantees:
+
+### Safe Access Guarantees
+
+✓ **Serialized Writes** - No `SQLITE_BUSY` errors  
+✓ **Write Transactions** - All-or-nothing commits  
+✓ **Isolated Reads** - Stable, immutable view  
+✓ **Forbidden Writes in Reads** - Enforced immutability  
+✓ **Non-Reentrancy** - Prevents deadlocks
+
+### Unsafe Access Methods
+
+For advanced use cases, you can lift specific guarantees:
+
+```swift
+// Write without transaction
+try dbQueue.writeWithoutTransaction { db in
+    // Multiple statements, not atomic
+    try Player(...).insert(db)
+    try Player(...).insert(db)
+}
+
+// Reentrant write (no transaction, reentrant)
+try dbQueue.unsafeReentrantWrite { db in
+    // Can call other database methods
+    try processPlayers(db)
+}
+
+// Read without transaction (can see partial updates)
+try dbQueue.unsafeRead { db in
+    // Not isolated from concurrent writes
+}
+
+// Reentrant read
+try dbQueue.unsafeReentrantRead { db in
+    // Can call other database methods
+}
+```
+
+<Warning>
+Unsafe methods make **you responsible** for thread safety. Use only when necessary and understand the consequences.
+</Warning>
+
+## DatabasePool Concurrency
+
+DatabasePool allows reads to run concurrently with writes:
+
+```swift
+// Thread 1: Long-running write
+try dbPool.write { db in
+    // Import large dataset
+    for record in largeDataset {
+        try record.insert(db)
+    }
+}
+
+// Thread 2: Read can run concurrently
+let players = try dbPool.read { db in
+    try Player.fetchAll(db)  // Sees stable snapshot
+}
+```
+
+### Scheduling Diagram
+
+DatabaseQueue serializes everything:
+
+```
+Thread A: [---- Write ----]      [- Read -]
+Thread B:                   [- Read -]      [- Write -]
+Thread C:                              [---------- Read ----------]
+```
+
+DatabasePool allows parallel reads:
+
+```
+Thread A: [---- Write ----]      [- Read -]
+Thread B: [- Read -]   [- Read -]    [- Write -]
+Thread C:    [- Read -]      [---------- Read ----------]
+```
+
+### Optimized Write-Then-Read
+
+Read immediately after writing without blocking other writers:
+
+```swift
+try dbPool.writeWithoutTransaction { db in
+    // Write in transaction
+    try db.inTransaction {
+        try Player(...).insert(db)
+        return .commit
+    }
+    
+    // Read the new state without blocking writers
+    dbPool.asyncConcurrentRead { result in
+        do {
+            let db = try result.get()
+            let count = try Player.fetchCount(db)
+            print("New count: \(count)")
+        } catch {
+            print("Error: \(error)")
+        }
+    }
+}
+```
+
+<Info>
+`asyncConcurrentRead` provides an isolated view of the database in the exact state left by the last transaction, without blocking concurrent writes.
+</Info>
+
+## Concurrent Thinking
+
+Write code that works correctly with both DatabaseQueue and DatabasePool:
+
+### Data Freshness
+
+**All fetched data is potentially stale:**
+
+```swift
+let cookieCount = dbPool.read { db in
+    try Cookie.fetchCount(db)
+}
+// At this point, the actual count may have already changed!
+print("Cookies: \(cookieCount)")
+```
+
+**Solutions:**
+
+1. **For UI updates**: Use `ValueObservation` to track fresh values
+2. **For critical operations**: Perform everything in a single transaction
+3. **For writes**: Trust that you have the latest state during the write
+
+### Transaction Isolation
+
+Reads see a consistent snapshot:
+
+```swift
+try dbPool.read { db in
+    let count1 = try Player.fetchCount(db)
+    sleep(1)  // Another thread modifies players
+    let count2 = try Player.fetchCount(db)
+    // count1 == count2 (isolated transaction)
+}
+```
+
+## Thread Safety Best Practices
+
+<Steps>
+  <Step title="Use safe methods by default">
+    Prefer `read` and `write` over unsafe variants:
+
+    ```swift
+    // Default to safe
+    try dbQueue.read { db in ... }
+    try dbQueue.write { db in ... }
+    ```
+  </Step>
+
+  <Step title="Group related operations">
+    Keep dependent operations in the same transaction:
+
+    ```swift
+    // CORRECT: Atomic operation
+    try dbQueue.write { db in
+        let player = try Player.fetchOne(db, id: 1)
+        player.score += 100
+        try player.update(db)
+    }
+    ```
+  </Step>
+
+  <Step title="Don't store Database references">
+    Database connections are only valid within their closure:
+
+    ```swift
+    var savedDB: Database?  // DON'T DO THIS
+    
+    try dbQueue.read { db in
+        savedDB = db  // WRONG: db is only valid here
+    }
+    
+    // savedDB is now invalid and dangerous to use
+    ```
+  </Step>
+
+  <Step title="Observe, don't poll">
+    Use ValueObservation instead of repeatedly fetching:
+
+    ```swift
+    // WRONG: Polling
+    Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+        let count = try! dbQueue.read { try Player.fetchCount($0) }
+        updateUI(count)
+    }
+    
+    // CORRECT: Observing
+    let observation = ValueObservation.tracking { db in
+        try Player.fetchCount(db)
+    }
+    observation.start(in: dbQueue) { count in
+        updateUI(count)
+    }
+    ```
+  </Step>
+</Steps>
+
+## Configuration
+
+### DatabasePool Configuration
+
+```swift
+var config = Configuration()
+config.maximumReaderCount = 10  // Default: 5
+
+let dbPool = try DatabasePool(path: dbPath, configuration: config)
+```
+
+### Performance Tuning
+
+```swift
+var config = Configuration()
+
+// Increase reader pool for read-heavy workloads
+config.maximumReaderCount = 20
+
+// Enable extended result codes
+config.prepareDatabase { db in
+    try db.execute(sql: "PRAGMA journal_mode = WAL")
+}
+
+let dbPool = try DatabasePool(path: dbPath, configuration: config)
+```
+
+## Common Patterns
+
+### Background Import
+
+```swift
+Task.detached {
+    try await dbPool.write { db in
+        for item in importData {
+            try item.insert(db)
+        }
+    }
+}
+```
+
+### Responsive UI During Writes
+
+```swift
+// Long write doesn't block UI updates
+Task {
+    try await dbPool.write { db in
+        // Import large dataset
+    }
+}
+
+// UI can still read concurrently
+let observation = ValueObservation.tracking { db in
+    try Player.fetchAll(db)
+}
+observation.start(in: dbPool) { players in
+    updateUI(players)
+}
+```
+
+### Migration with Progress
+
+```swift
+Task {
+    try await dbPool.write { db in
+        let total = try OldRecord.fetchCount(db)
+        var processed = 0
+        
+        for oldRecord in try OldRecord.fetchAll(db) {
+            try NewRecord(from: oldRecord).insert(db)
+            processed += 1
+            await MainActor.run {
+                updateProgress(Double(processed) / Double(total))
+            }
+        }
+    }
+}
+```

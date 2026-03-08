@@ -1,0 +1,301 @@
+---
+title: Database Observation
+description: Track database changes with ValueObservation and observe transactions in real-time
+---
+
+**GRDB provides powerful tools to observe database changes and react to them in real-time.** You can track specific values, observe database regions, or handle individual transactions.
+
+## ValueObservation
+
+ValueObservation is the primary way to track changes in database values. It notifies you whenever the tracked value changes.
+
+### Basic Usage
+
+<Steps>
+  <Step title="Define the observation">
+    Specify what value you want to track:
+
+    ```swift
+    let observation = ValueObservation.tracking { db in
+        try Player.fetchAll(db)
+    }
+    ```
+  </Step>
+
+  <Step title="Start observing">
+    Start the observation and handle changes:
+
+    ```swift
+    let cancellable = observation.start(
+        in: dbQueue,
+        onError: { error in
+            print("Observation error: \(error)")
+        },
+        onChange: { (players: [Player]) in
+            print("Fresh players: \(players)")
+        }
+    )
+    ```
+  </Step>
+
+  <Step title="Cancel when done">
+    The observation continues until the cancellable is released:
+
+    ```swift
+    // Cancel observation
+    cancellable.cancel()
+    ```
+  </Step>
+</Steps>
+
+### Tracking Different Values
+
+ValueObservation can track any database value:
+
+```swift
+// Track a count
+let observation = ValueObservation.tracking { db in
+    try Player.fetchCount(db)
+}
+
+// Track a single optional value
+let observation = ValueObservation.tracking { db in
+    try Int.fetchOne(db, sql: "SELECT MAX(score) FROM player")
+}
+
+// Track custom queries
+let observation = ValueObservation.tracking { db -> [PlayerScore] in
+    let rows = try Row.fetchAll(db, sql: """
+        SELECT name, score FROM player
+        ORDER BY score DESC
+        LIMIT 10
+        """)
+    return rows.map { PlayerScore($0) }
+}
+```
+
+### Swift Concurrency
+
+ValueObservation integrates seamlessly with async/await:
+
+```swift
+// Async sequence of values
+for try await players in observation.values(in: dbQueue) {
+    print("Fresh players: \(players)")
+}
+```
+
+<Info>
+The observation starts immediately when you begin iterating. It stops when the loop exits or the task is cancelled.
+</Info>
+
+### Scheduling Options
+
+Control when and how fresh values are delivered:
+
+```swift
+// Default: async on main thread
+let cancellable = observation.start(
+    in: dbQueue,
+    onError: { error in ... },
+    onChange: { players in ... }
+)
+
+// Immediate notification of initial value
+let cancellable = observation.start(
+    in: dbQueue,
+    scheduling: .immediate,
+    onError: { error in ... },
+    onChange: { players in ... }
+)
+// <- "Fresh players" is already printed here
+```
+
+<Warning>
+The `.immediate` scheduler requires that you start the observation from the main thread. It raises a fatal error otherwise.
+</Warning>
+
+### Handling Duplicates
+
+ValueObservation may notify consecutive identical values. Filter them out:
+
+```swift
+let observation = ValueObservation
+    .tracking { db in try Player.fetchAll(db) }
+    .removeDuplicates()
+```
+
+### Observation Events
+
+Debug or track observation lifecycle events:
+
+```swift
+let observation = ValueObservation
+    .tracking { db in try Player.fetchAll(db) }
+    .handleEvents(
+        willStart: { print("Observation will start") },
+        willFetch: { print("About to fetch") },
+        willTrackRegion: { region in print("Tracking: \(region)") },
+        databaseDidChange: { print("Database changed") },
+        didReceiveValue: { players in print("Received \(players.count) players") },
+        didFail: { error in print("Failed: \(error)") },
+        didCancel: { print("Cancelled") }
+    )
+```
+
+## SharedValueObservation
+
+When multiple parts of your app need to observe the same value, use SharedValueObservation to avoid redundant database queries:
+
+```swift
+let sharedObservation = ValueObservation
+    .tracking { db in try Player.fetchAll(db) }
+    .shared(in: dbQueue)
+
+// Multiple subscribers share the same observation
+let cancellable1 = sharedObservation.start { players in
+    // Update UI component 1
+}
+
+let cancellable2 = sharedObservation.start { players in
+    // Update UI component 2
+}
+```
+
+<Note>
+SharedValueObservation performs a single database fetch and notifies all subscribers, reducing database load.
+</Note>
+
+## DatabaseRegionObservation
+
+For fine-grained control, observe database regions to be notified of transactions that impact them:
+
+```swift
+let observation = DatabaseRegionObservation.tracking(Player.all())
+
+let cancellable = observation.publisher(in: dbQueue)
+    .sink(
+        receiveCompletion: { completion in ... },
+        receiveValue: { (db: Database) in
+            print("Exclusive write access after players changed")
+            // Perform additional queries here
+        }
+    )
+```
+
+### Custom Regions
+
+Track specific tables, columns, or SQL requests:
+
+```swift
+// Track specific table
+let observation = DatabaseRegionObservation.tracking(Table("player"))
+
+// Track SQL request
+let observation = DatabaseRegionObservation.tracking(
+    SQLRequest<Int>(sql: "SELECT MAX(score) FROM player")
+)
+```
+
+## Transaction Observation
+
+Handle individual transaction commits or rollbacks:
+
+```swift
+try dbQueue.write { db in
+    db.afterNextTransaction { result in
+        switch result {
+        case .commit:
+            print("Transaction committed")
+        case .rollback:
+            print("Transaction rolled back")
+        }
+    }
+    
+    try Player(name: "Alice").insert(db)
+}
+```
+
+## Best Practices
+
+<Warning>
+**Avoid combining multiple observations with Combine operators like `combineLatest` or `zip`.** This breaks data consistency guarantees because each observation sees its own database state.
+</Warning>
+
+Instead, perform all related queries in a single observation:
+
+```swift
+// CORRECT: Single observation, consistent data
+struct HallOfFame {
+    var totalPlayerCount: Int
+    var bestPlayers: [Player]
+}
+
+let observation = ValueObservation.tracking { db -> HallOfFame in
+    let totalPlayerCount = try Player.fetchCount(db)
+    let bestPlayers = try Player
+        .order(Column("score").desc)
+        .limit(10)
+        .fetchAll(db)
+    
+    return HallOfFame(
+        totalPlayerCount: totalPlayerCount,
+        bestPlayers: bestPlayers
+    )
+}
+```
+
+```swift
+// INCORRECT: Multiple observations, inconsistent data
+let totalPlayerCountObservation = ValueObservation
+    .tracking { db in try Player.fetchCount(db) }
+
+let bestPlayersObservation = ValueObservation
+    .tracking { db in
+        try Player.order(Column("score").desc).limit(10).fetchAll(db)
+    }
+
+// DON'T: Can produce inconsistent results
+let combined = totalPlayerCountObservation.publisher(in: dbQueue)
+    .combineLatest(bestPlayersObservation.publisher(in: dbQueue))
+```
+
+## Troubleshooting
+
+### Observation Not Updating
+
+If ValueObservation doesn't notify changes you expect:
+
+1. Enable region tracking logs:
+
+```swift
+let observation = ValueObservation
+    .tracking { db in try Player.fetchAll(db) }
+    .handleEvents(willTrackRegion: { region in
+        print("Tracked region: \(region)")
+    })
+```
+
+2. Check if the tracked region includes your changes
+3. Verify the observation hasn't been deallocated
+4. Ensure database writes occur in the same database connection
+
+### Performance Optimization
+
+For frequently changing values:
+
+```swift
+// Reduce notification frequency
+let observation = ValueObservation
+    .tracking { db in try Player.fetchAll(db) }
+    .removeDuplicates()
+
+// Only track specific columns
+let observation = ValueObservation.trackingConstantRegion(Player.all()) { db in
+    try Player.fetchAll(db)
+}
+```
+
+<Info>
+`trackingConstantRegion` can optimize performance when you know exactly which database region to observe.
+</Info>

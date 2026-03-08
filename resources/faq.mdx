@@ -1,0 +1,225 @@
+---
+title: Frequently Asked Questions
+description: Common questions and answers about using GRDB
+icon: circle-question
+---
+
+Find answers to common questions about GRDB, from opening connections to debugging queries.
+
+## Opening Connections
+
+<AccordionGroup>
+  <Accordion title="How do I create a database in my application?">
+    First choose a proper location for the database file. Document-based applications will let the user pick a location. Apps that use the database as a global storage will prefer the Application Support directory.
+
+    The sample code below creates or opens a database file inside its dedicated directory (a [recommended practice](https://swiftpackageindex.com/groue/GRDB.swift/documentation/grdb/databaseconnections)). On the first run, a new empty database file is created. On subsequent runs, the database file already exists, so it just opens a connection:
+
+    ```swift
+    // Create the "Application Support/MyDatabase" directory
+    let fileManager = FileManager.default
+    let appSupportURL = try fileManager.url(
+        for: .applicationSupportDirectory, in: .userDomainMask,
+        appropriateFor: nil, create: true) 
+    let directoryURL = appSupportURL.appendingPathComponent("MyDatabase", isDirectory: true)
+    try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+    // Open or create the database
+    let databaseURL = directoryURL.appendingPathComponent("db.sqlite")
+    let dbQueue = try DatabaseQueue(path: databaseURL.path)
+    ```
+  </Accordion>
+
+  <Accordion title="How do I open a database stored as a resource of my application?">
+    Open a read-only connection to your resource:
+
+    ```swift
+    // Get the path to the database resource
+    if let dbPath = Bundle.main.path(forResource: "db", ofType: "sqlite") {
+        // If the resource exists, open a read-only connection
+        // Writes are disallowed because resources cannot be modified
+        var config = Configuration()
+        config.readonly = true
+        let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+    } else {
+        // The database resource cannot be found
+        // Fix your setup, or report the problem to the user
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="How do I close a database connection?">
+    Database connections are automatically closed when `DatabaseQueue` or `DatabasePool` instances are deinitialized.
+
+    If the correct execution of your program depends on precise database closing, perform an explicit call to `close()`. This method may fail and create zombie connections, so please check its [detailed documentation](https://swiftpackageindex.com/groue/GRDB.swift/documentation/grdb/databasereader/close()).
+  </Accordion>
+</AccordionGroup>
+
+## SQL and Debugging
+
+<AccordionGroup>
+  <Accordion title="How do I print a request as SQL?">
+    When debugging a request that doesn't deliver expected results, you can compile the request into a prepared statement:
+
+    ```swift
+    try dbQueue.read { db in
+        let request = Player.filter { $0.email == "arthur@example.com" }
+        let statement = try request.makePreparedRequest(db).statement
+        print(statement) // SELECT * FROM player WHERE email = ?
+        print(statement.arguments) // ["arthur@example.com"]
+    }
+    ```
+
+    Or setup a tracing function:
+
+    ```swift
+    var config = Configuration()
+    config.prepareDatabase { db in
+        db.trace { print($0) }
+    }
+    let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+    ```
+
+    <Note>
+      The generated SQL may change between GRDB releases without notice: don't have your application rely on any specific SQL output.
+    </Note>
+  </Accordion>
+
+  <Accordion title="How do I monitor the duration of database statements execution?">
+    Use the `trace(options:_:)` method with the `.profile` option:
+
+    ```swift
+    var config = Configuration()
+    config.prepareDatabase { db in
+        db.trace(options: .profile) { event in
+            // Prints all SQL statements with their duration
+            print(event)
+            
+            // Access detailed profiling information
+            if case let .profile(statement, duration) = event, duration > 0.5 {
+                print("Slow query: \(statement.sql)")
+            }
+        }
+    }
+    let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Features and Compatibility
+
+<AccordionGroup>
+  <Accordion title="What are experimental features?">
+    Since GRDB 1.0, all backwards compatibility guarantees of [semantic versioning](http://semver.org) apply: no breaking change will happen until the next major version of the library.
+
+    There is an exception: **experimental features**, marked with the "🔥 EXPERIMENTAL" badge. These are advanced features that are too young or lack user feedback. They are not stabilized yet.
+
+    Experimental features are not protected by semantic versioning and may break between two minor releases of the library. Your [feedback](https://github.com/groue/GRDB.swift/issues) is greatly appreciated to help them become stable.
+  </Accordion>
+
+  <Accordion title="Does GRDB support library evolution and ABI stability?">
+    No, GRDB does not support library evolution and ABI stability. The only promise is API stability according to [semantic versioning](http://semver.org), with an exception for experimental features.
+
+    However, GRDB can be built with the "Build Libraries for Distribution" Xcode option (`BUILD_LIBRARY_FOR_DISTRIBUTION`), so you can build binary frameworks at your convenience.
+  </Accordion>
+</AccordionGroup>
+
+## Associations
+
+<AccordionGroup>
+  <Accordion title="How do I filter records and only keep those that are associated to another record?">
+    Use `joining(required:)` to only fetch records that have an association:
+
+    ```swift
+    struct Book: TableRecord {
+        static let author = belongsTo(Author.self)
+    }
+
+    let books: [Book] = try dbQueue.read { db in
+        // SELECT book.* FROM book 
+        // JOIN author ON author.id = book.authorID
+        let request = Book.joining(required: Book.author)
+        return try request.fetchAll(db)
+    }
+    ```
+
+    This fetches only books that have an author, discarding anonymous ones.
+  </Accordion>
+
+  <Accordion title="How do I filter records and only keep those that are NOT associated to another record?">
+    Use a combination of optional join and filter:
+
+    ```swift
+    let books: [Book] = try dbQueue.read { db in
+        // SELECT book.* FROM book
+        // LEFT JOIN author ON author.id = book.authorID
+        // WHERE author.id IS NULL
+        let authorAlias = TableAlias<Author>()
+        let request = Book
+            .joining(optional: Book.author.aliased(authorAlias))
+            .filter(!authorAlias.exists)
+        return try request.fetchAll(db)
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="How do I select only one column of an associated record?">
+    Use `annotated(withOptional:)` to append specific columns:
+
+    ```swift
+    struct BookInfo: Decodable, FetchableRecord {
+        var book: Book
+        var authorName: String?
+        
+        static func all() -> QueryInterfaceRequest<BookInfo> {
+            return Book
+                .annotated(withOptional: Book.author.select { 
+                    $0.name.forKey(CodingKeys.authorName)
+                })
+                .asRequest(of: BookInfo.self)
+        }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## ValueObservation
+
+<AccordionGroup>
+  <Accordion title="Why is ValueObservation not publishing value changes?">
+    There may be four possible reasons:
+
+    1. **Changes not committed**: The expected changes were not committed into the database
+    2. **Changes overwritten**: The changes were committed but quickly overwritten
+    3. **Observation stopped**: The observation was stopped or cancelled
+    4. **Wrong region tracked**: The observation doesn't track the expected database region
+
+    To debug, enable SQL tracing:
+
+    ```swift
+    var config = Configuration()
+    config.prepareDatabase { db in
+        db.trace { print("SQL: \($0)") }
+    }
+    let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+    ```
+
+    See the [ValueObservation documentation](https://swiftpackageindex.com/groue/GRDB.swift/documentation/grdb/valueobservation) for more troubleshooting tips.
+  </Accordion>
+</AccordionGroup>
+
+## Need More Help?
+
+<CardGroup cols={2}>
+  <Card title="GitHub Discussions" icon="github" href="https://github.com/groue/GRDB.swift/discussions">
+    Ask questions and get help from the community
+  </Card>
+  <Card title="Swift Forums" icon="swift" href="https://forums.swift.org/c/related-projects/grdb">
+    Discuss GRDB on the Swift forums
+  </Card>
+  <Card title="Report Issues" icon="bug" href="https://github.com/groue/GRDB.swift/issues">
+    Found a bug? Report it on GitHub
+  </Card>
+  <Card title="Documentation" icon="book" href="https://swiftpackageindex.com/groue/GRDB.swift/documentation/grdb">
+    Browse the complete API reference
+  </Card>
+</CardGroup>

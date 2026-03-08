@@ -1,0 +1,470 @@
+---
+title: Executing Updates
+description: Learn how to execute INSERT, UPDATE, DELETE, and other SQL statements that modify the database
+---
+
+The `execute` method executes SQL statements that do not return database rows, such as `CREATE TABLE`, `INSERT`, `DELETE`, `ALTER`, etc.
+
+## Basic Usage
+
+```swift
+try dbQueue.write { db in
+    try db.execute(sql: """
+        CREATE TABLE player (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            score INT)
+        """)
+}
+```
+
+## The execute Method
+
+The `Database` class provides two execute methods:
+
+```swift
+public func execute(sql: String, arguments: StatementArguments = []) throws
+public func execute(literal: SQL) throws
+```
+
+## INSERT Operations
+
+<Tabs>
+  <Tab title="With Arguments Array">
+    ```swift
+    try dbQueue.write { db in
+        try db.execute(
+            sql: "INSERT INTO player (name, score) VALUES (?, ?)",
+            arguments: ["Barbara", 1000])
+    }
+    ```
+  </Tab>
+  <Tab title="With Arguments Dictionary">
+    ```swift
+    try dbQueue.write { db in
+        try db.execute(
+            sql: "INSERT INTO player (name, score) VALUES (:name, :score)",
+            arguments: ["name": "Barbara", "score": 1000])
+    }
+    ```
+  </Tab>
+  <Tab title="With SQL Interpolation">
+    ```swift
+    try dbQueue.write { db in
+        let name = "O'Brien"
+        let score = 550
+        try db.execute(literal: """
+            INSERT INTO player (name, score) VALUES (\(name), \(score))
+            """)
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Getting the Inserted Row ID
+
+After an INSERT statement, you can get the row ID of the inserted row:
+
+```swift
+try dbQueue.write { db in
+    try db.execute(
+        sql: "INSERT INTO player (name, score) VALUES (?, ?)",
+        arguments: ["Arthur", 1000])
+    
+    let playerId = db.lastInsertedRowID
+    print("Inserted player with id: \(playerId)")
+}
+```
+
+## UPDATE Operations
+
+<CodeGroup>
+```swift Simple Update
+try dbQueue.write { db in
+    try db.execute(
+        sql: "UPDATE player SET score = ? WHERE id = ?",
+        arguments: [1000, 1])
+}
+```
+
+```swift Named Parameters
+try dbQueue.write { db in
+    try db.execute(
+        sql: "UPDATE player SET score = :score WHERE id = :id",
+        arguments: ["score": 1000, "id": 1])
+}
+```
+
+```swift SQL Interpolation
+try dbQueue.write { db in
+    let score = 1000
+    let id = 1
+    try db.execute(literal: """
+        UPDATE player SET score = \(score) WHERE id = \(id)
+        """)
+}
+```
+</CodeGroup>
+
+### Checking Affected Rows
+
+```swift
+try dbQueue.write { db in
+    try db.execute(
+        sql: "UPDATE player SET score = ? WHERE name = ?",
+        arguments: [2000, "Arthur"])
+    
+    let changedRows = db.changesCount
+    if changedRows == 0 {
+        print("No player named Arthur found")
+    }
+}
+```
+
+## DELETE Operations
+
+<Tabs>
+  <Tab title="Delete Specific Rows">
+    ```swift
+    try dbQueue.write { db in
+        try db.execute(
+            sql: "DELETE FROM player WHERE score < ?",
+            arguments: [500])
+    }
+    ```
+  </Tab>
+  <Tab title="Delete All Rows">
+    ```swift
+    try dbQueue.write { db in
+        try db.execute(sql: "DELETE FROM player")
+    }
+    ```
+  </Tab>
+  <Tab title="With RETURNING">
+    ```swift
+    try dbQueue.write { db in
+        let deletedNames = try String.fetchAll(db, sql: """
+            DELETE FROM player 
+            WHERE score < 500 
+            RETURNING name
+            """)
+        print("Deleted players: \(deletedNames.joined(separator: ", "))")
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Multiple Statements
+
+Join multiple statements with a semicolon:
+
+```swift
+try dbQueue.write { db in
+    try db.execute(sql: """
+        INSERT INTO player (name, score) VALUES (?, ?);
+        INSERT INTO player (name, score) VALUES (?, ?);
+        """, arguments: ["Arthur", 750, "Barbara", 1000])
+}
+```
+
+<Warning>
+  When executing multiple statements, if any statement fails, the entire operation stops at that point. Consider using transactions for atomic operations.
+</Warning>
+
+## SQL Interpolation
+
+SQL Interpolation provides safe value embedding with automatic escaping:
+
+```swift
+try dbQueue.write { db in
+    let name = "O'Brien"  // Contains single quote
+    let score = 1000
+    let active = true
+    
+    try db.execute(literal: """
+        INSERT INTO player (name, score, active) 
+        VALUES (\(name), \(score), \(active))
+        """)
+}
+```
+
+### Identifiers in SQL Interpolation
+
+Use `\(bind:)` for table and column names:
+
+```swift
+let tableName = "player"
+let columnName = "score"
+
+try db.execute(literal: """
+    UPDATE \(bind: tableName) 
+    SET \(bind: columnName) = \(score) 
+    WHERE id = \(id)
+    """)
+```
+
+## Avoiding SQL Injection
+
+<Warning>
+  **Never embed values directly in raw SQL strings!** This creates SQL injection vulnerabilities.
+</Warning>
+
+<CodeGroup>
+```swift ❌ WRONG
+// DANGEROUS: SQL injection vulnerability!
+let name = textField.text
+try db.execute(sql: "UPDATE player SET name = '\(name)' WHERE id = 1")
+```
+
+```swift ✅ CORRECT - Arguments
+// SAFE: Use arguments array
+let name = textField.text
+try db.execute(
+    sql: "UPDATE player SET name = ? WHERE id = ?",
+    arguments: [name, 1])
+```
+
+```swift ✅ CORRECT - SQL Interpolation
+// SAFE: Use SQL Interpolation
+let name = textField.text
+try db.execute(literal: """
+    UPDATE player SET name = \(name) WHERE id = \(1)
+    """)
+```
+</CodeGroup>
+
+## Statement Arguments
+
+GRDB supports many Swift types as statement arguments:
+
+### Basic Types
+
+```swift
+try db.execute(
+    sql: "INSERT INTO data (bool, int, double, string) VALUES (?, ?, ?, ?)",
+    arguments: [
+        true,           // Bool
+        42,             // Int
+        3.14,           // Double
+        "Hello"         // String
+    ])
+```
+
+### Date and Time
+
+```swift
+try db.execute(
+    sql: "INSERT INTO event (date, time) VALUES (?, ?)",
+    arguments: [
+        Date(),                 // Date
+        DateComponents(hour: 10, minute: 30)  // DateComponents
+    ])
+```
+
+### Data and UUID
+
+```swift
+try db.execute(
+    sql: "INSERT INTO file (data, uuid) VALUES (?, ?)",
+    arguments: [
+        Data([0x01, 0x02, 0x03]),  // Data
+        UUID()                      // UUID
+    ])
+```
+
+### Enums
+
+```swift
+enum Color: Int, DatabaseValueConvertible {
+    case red, white, rose
+}
+
+try db.execute(
+    sql: "INSERT INTO wine (color) VALUES (?)",
+    arguments: [Color.red])
+```
+
+### Optional Values
+
+```swift
+let optionalName: String? = nil
+try db.execute(
+    sql: "INSERT INTO player (name) VALUES (?)",
+    arguments: [optionalName])  // Inserts NULL
+```
+
+## Error Handling
+
+<CodeGroup>
+```swift Basic Error Handling
+do {
+    try dbQueue.write { db in
+        try db.execute(
+            sql: "INSERT INTO player (name) VALUES (?)",
+            arguments: ["Arthur"])
+    }
+} catch let error as DatabaseError {
+    print("Database error: \(error.message ?? "")")
+    print("SQL: \(error.sql ?? "")")
+    print("Code: \(error.resultCode)")
+} catch {
+    print("Unexpected error: \(error)")
+}
+```
+
+```swift Constraint Violations
+do {
+    try dbQueue.write { db in
+        // Duplicate primary key
+        try db.execute(sql: "INSERT INTO player (id, name) VALUES (1, 'Arthur')")
+        try db.execute(sql: "INSERT INTO player (id, name) VALUES (1, 'Barbara')")
+    }
+} catch DatabaseError.SQLITE_CONSTRAINT {
+    print("Constraint violation: duplicate primary key")
+}
+```
+
+```swift Detailed Error Info
+do {
+    try dbQueue.write { db in
+        try db.execute(sql: "INVALID SQL")
+    }
+} catch let error as DatabaseError {
+    if error.extendedResultCode == .SQLITE_CONSTRAINT_PRIMARYKEY {
+        print("Primary key constraint violated")
+    } else if error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE {
+        print("Unique constraint violated")
+    }
+}
+```
+</CodeGroup>
+
+## Common Patterns
+
+### Batch Inserts
+
+```swift
+try dbQueue.write { db in
+    let players = [
+        ("Arthur", 1000),
+        ("Barbara", 2000),
+        ("Charlie", 1500)
+    ]
+    
+    let statement = try db.makeStatement(
+        sql: "INSERT INTO player (name, score) VALUES (?, ?)")
+    
+    for (name, score) in players {
+        try statement.execute(arguments: [name, score])
+    }
+}
+```
+
+### Conditional Updates
+
+```swift
+try dbQueue.write { db in
+    try db.execute(sql: """
+        UPDATE player 
+        SET score = score + 100 
+        WHERE score < 1000
+        """)
+    
+    let updatedCount = db.changesCount
+    print("Updated \(updatedCount) players")
+}
+```
+
+### Upsert (INSERT OR REPLACE)
+
+```swift
+try dbQueue.write { db in
+    try db.execute(sql: """
+        INSERT INTO player (id, name, score) 
+        VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            score = excluded.score
+        """, arguments: [1, "Arthur", 1500])
+}
+```
+
+## Using Records for Persistence
+
+For most use cases, prefer using record types instead of raw SQL:
+
+```swift
+struct Player: Codable, PersistableRecord {
+    var id: Int64?
+    var name: String
+    var score: Int
+}
+
+try dbQueue.write { db in
+    // INSERT
+    var player = Player(id: nil, name: "Arthur", score: 1000)
+    try player.insert(db)
+    
+    // UPDATE
+    player.score = 1500
+    try player.update(db)
+    
+    // DELETE
+    try player.delete(db)
+}
+```
+
+See the [Records](/records/overview) documentation for more information.
+
+## Performance Tips
+
+<Tabs>
+  <Tab title="Prepared Statements">
+    Reuse prepared statements for better performance:
+    
+    ```swift
+    try dbQueue.write { db in
+        let statement = try db.makeStatement(
+            sql: "INSERT INTO player (name, score) VALUES (?, ?)")
+        
+        for _ in 0..<1000 {
+            try statement.execute(arguments: ["Player", 100])
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="Transactions">
+    Wrap multiple updates in a transaction:
+    
+    ```swift
+    try dbQueue.write { db in
+        try db.inTransaction {
+            for i in 0..<1000 {
+                try db.execute(
+                    sql: "INSERT INTO player (name) VALUES (?)",
+                    arguments: ["Player \(i)"])
+            }
+            return .commit
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="Batch Operations">
+    Use batch operations when possible:
+    
+    ```swift
+    try dbQueue.write { db in
+        // Delete multiple rows at once
+        try db.execute(
+            sql: "DELETE FROM player WHERE score < ?",
+            arguments: [500])
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Next Steps
+
+- [Fetch Queries](/core/fetch-queries) - Learn how to query and retrieve data
+- [Transactions](/core/transactions) - Learn about transactions and savepoints
+- [Records](/records/overview) - Learn about record types for easier database access

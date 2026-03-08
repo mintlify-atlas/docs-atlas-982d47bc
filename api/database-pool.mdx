@@ -1,0 +1,320 @@
+---
+title: "DatabasePool"
+description: "A multi-connection SQLite database with concurrent read access"
+---
+
+`DatabasePool` provides concurrent database access with a pool of read-only connections and a single write connection.
+
+## Overview
+
+`DatabasePool` opens multiple connections to an SQLite database, enabling concurrent reads while maintaining serialized writes. It uses SQLite's [WAL mode](https://www.sqlite.org/wal.html) for optimal concurrency.
+
+```swift
+let dbPool = try DatabasePool(path: "/path/to/database.sqlite")
+```
+
+Use `DatabasePool` when you need:
+- Concurrent read access from multiple threads
+- Maximum read throughput
+- Production applications with high concurrency
+
+For simpler serial access, use [`DatabaseQueue`](/api/database-queue).
+
+## Initialization
+
+### Opening a Database File
+
+<ParamField path="path" type="String" required>
+  The path to the database file
+</ParamField>
+
+<ParamField path="configuration" type="Configuration" default="Configuration()">
+  Optional database configuration
+</ParamField>
+
+```swift
+let dbPool = try DatabasePool(path: "/path/to/database.sqlite")
+
+// With configuration
+var config = Configuration()
+config.maximumReaderCount = 10
+let dbPool = try DatabasePool(path: dbPath, configuration: config)
+```
+
+<Note>
+`DatabasePool` automatically enables WAL mode on the database.
+</Note>
+
+## Properties
+
+<ResponseField name="configuration" type="Configuration">
+  The database configuration
+</ResponseField>
+
+<ResponseField name="path" type="String">
+  The path to the database file
+</ResponseField>
+
+## Reading from the Database
+
+### read(_:)
+
+Reads from the database using a reader connection.
+
+<ParamField path="value" type="(Database) throws -> T" required>
+  A closure that accesses the database
+</ParamField>
+
+```swift
+let players = try dbPool.read { db in
+    try Player.fetchAll(db)
+}
+```
+
+<Tip>
+Reads execute concurrently and don't block each other or writes.
+</Tip>
+
+### asyncRead(_:)
+
+Asynchronously reads from the database.
+
+```swift
+dbPool.asyncRead { result in
+    switch result {
+    case .success(let db):
+        let count = try Player.fetchCount(db)
+        print("Player count: \(count)")
+    case .failure(let error):
+        print("Error: \(error)")
+    }
+}
+```
+
+### asyncConcurrentRead(_:)
+
+Performs an asynchronous concurrent read that sees the database state at the moment this method is called.
+
+<Warning>
+This method must be called from the writer dispatch queue, outside of any transaction.
+</Warning>
+
+```swift
+try dbPool.asyncWriteWithoutTransaction { db in
+    try Player.deleteAll(db)
+    
+    // Count players concurrently (guaranteed to be zero)
+    dbPool.asyncConcurrentRead { dbResult in
+        let count = try dbResult.get().fetchOne(sql: "SELECT COUNT(*) FROM player")
+        print(count) // 0
+    }
+    
+    try Player(name: "Arthur").insert(db)
+}
+```
+
+### unsafeRead(_:)
+
+Reads from the database without transaction isolation.
+
+```swift
+let value = try dbPool.unsafeRead { db in
+    try Player.fetchOne(db, key: 1)
+}
+```
+
+## Writing to the Database
+
+### write(_:)
+
+Synchronously writes to the database in an implicit transaction.
+
+<ParamField path="updates" type="(Database) throws -> T" required>
+  A closure that updates the database
+</ParamField>
+
+```swift
+try dbPool.write { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    try Player(name: "Barbara", score: 50).insert(db)
+}
+```
+
+### writeInTransaction(_:_:)
+
+Executes operations in an explicit transaction.
+
+```swift
+try dbPool.writeInTransaction { db in
+    try Player(name: "Arthur").insert(db)
+    try Player(name: "Barbara").insert(db)
+    return .commit
+}
+```
+
+### writeWithoutTransaction(_:)
+
+Writes to the database without an implicit transaction.
+
+```swift
+try dbPool.writeWithoutTransaction { db in
+    try db.execute(sql: "PRAGMA optimize")
+}
+```
+
+### barrierWriteWithoutTransaction(_:)
+
+Writes to the database and waits for all concurrent reads to complete first.
+
+```swift
+try dbPool.barrierWriteWithoutTransaction { db in
+    // No concurrent reads are running
+    try db.execute(sql: "VACUUM")
+}
+```
+
+<Note>
+This method blocks until all concurrent reads complete, which may take time.
+</Note>
+
+## Async/Await Support
+
+```swift
+// Async read
+let players = try await dbPool.read { db in
+    try Player.fetchAll(db)
+}
+
+// Async write
+try await dbPool.write { db in
+    try Player(name: "Arthur").insert(db)
+}
+```
+
+## Database Snapshots
+
+### makeSnapshot()
+
+Creates a snapshot that provides a stable, immutable view of the database.
+
+```swift
+let snapshot = try dbPool.makeSnapshot()
+
+// The snapshot sees the database as it was when created
+let players = try snapshot.read { db in
+    try Player.fetchAll(db)
+}
+```
+
+<Warning>
+Do not call `makeSnapshot()` from inside a transaction. This will raise a fatal error.
+</Warning>
+
+## Memory Management
+
+### releaseMemory()
+
+Synchronously frees as much memory as possible.
+
+```swift
+dbPool.releaseMemory()
+```
+
+### releaseMemoryEventually()
+
+Asynchronously frees memory without blocking current operations.
+
+```swift
+dbPool.releaseMemoryEventually()
+```
+
+<Tip>
+On iOS, GRDB automatically manages memory when the app enters the background or receives memory warnings.
+</Tip>
+
+### invalidateReadOnlyConnections()
+
+Closes all read-only connections. New connections will be created as needed.
+
+```swift
+dbPool.invalidateReadOnlyConnections()
+```
+
+## Database Interruption
+
+### interrupt()
+
+Cancels any running database operations.
+
+```swift
+dbPool.interrupt()
+```
+
+## Closing the Database
+
+### close()
+
+Closes all database connections.
+
+```swift
+try dbPool.close()
+```
+
+<Warning>
+Once closed, the database pool cannot be reopened. Create a new instance instead.
+</Warning>
+
+## WAL Checkpoints
+
+Since `DatabasePool` uses WAL mode, you can manually checkpoint the WAL file:
+
+```swift
+try dbPool.write { db in
+    try db.checkpoint(.passive)
+}
+```
+
+## Configuration Options
+
+### Reader Count
+
+```swift
+var config = Configuration()
+config.maximumReaderCount = 5 // Default is based on active CPUs
+let dbPool = try DatabasePool(path: dbPath, configuration: config)
+```
+
+### Persistent Connections
+
+```swift
+var config = Configuration()
+config.persistentReadOnlyConnections = true // Keep connections alive
+let dbPool = try DatabasePool(path: dbPath, configuration: config)
+```
+
+## Performance Tips
+
+<Tip>
+  Use `DatabasePool` for production apps that need concurrent reads. The overhead is minimal, and the performance gains are significant.
+</Tip>
+
+<Tip>
+  Reads are non-blocking and can execute in parallel. Writes are serialized but don't block reads thanks to WAL mode.
+</Tip>
+
+<Warning>
+  Avoid long-running read transactions as they can prevent the WAL file from being checkpointed.
+</Warning>
+
+## Related Types
+
+- [`DatabaseQueue`](/api/database-queue) - Single-connection database for serial access
+- [`Database`](/api/database) - Low-level database connection
+- [`DatabaseSnapshot`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databasesnapshot) - Immutable database snapshot
+- [`Configuration`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/configuration) - Database configuration
+
+## See Also
+
+- [Database Connections](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databaseconnections)
+- [Concurrency Guide](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/concurrency)
+- [SQLite WAL Mode](https://www.sqlite.org/wal.html)

@@ -1,0 +1,569 @@
+---
+title: PersistableRecord
+description: Persist Swift types to the database with PersistableRecord and MutablePersistableRecord
+---
+
+The `PersistableRecord` and `MutablePersistableRecord` protocols allow Swift types to be persisted in the database. These protocols provide methods for inserting, updating, saving, and deleting records.
+
+## Choosing the Right Protocol
+
+GRDB provides two persistence protocols:
+
+<CardGroup cols={2}>
+  <Card title="MutablePersistableRecord" icon="pencil">
+    For **structs** that need to mutate when inserted (to capture auto-incremented IDs)
+  </Card>
+  <Card title="PersistableRecord" icon="lock">
+    For **classes** or immutable records that don't need to mutate on insertion
+  </Card>
+</CardGroup>
+
+### MutablePersistableRecord
+
+Use `MutablePersistableRecord` for struct-based records:
+
+```swift
+struct Player: MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    var id: Int64?
+    var name: String
+    var score: Int
+    
+    func encode(to container: inout PersistenceContainer) {
+        container["id"] = id
+        container["name"] = name
+        container["score"] = score
+    }
+    
+    // Mutating callback to capture the auto-incremented id
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+
+var player = Player(id: nil, name: "Arthur", score: 100)
+try player.insert(db)
+print(player.id) // The auto-incremented id
+```
+
+### PersistableRecord
+
+Use `PersistableRecord` for class-based records:
+
+```swift
+class Player: PersistableRecord {
+    static let databaseTableName = "player"
+    
+    var id: Int64?
+    var name: String
+    var score: Int
+    
+    init(id: Int64?, name: String, score: Int) {
+        self.id = id
+        self.name = name
+        self.score = score
+    }
+    
+    func encode(to container: inout PersistenceContainer) {
+        container["id"] = id
+        container["name"] = name
+        container["score"] = score
+    }
+    
+    // Non-mutating callback
+    func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+
+let player = Player(id: nil, name: "Arthur", score: 100)
+try player.insert(db)
+print(player.id) // The auto-incremented id
+```
+
+## Encoding Records
+
+Both protocols require implementing the `encode(to:)` method:
+
+```swift
+func encode(to container: inout PersistenceContainer) {
+    container["id"] = id
+    container["name"] = name
+    container["score"] = score
+}
+```
+
+The `PersistenceContainer` stores your record's values. Each key corresponds to a database column name.
+
+<Note>
+  Column names are case-insensitive. Setting both `"name"` and `"NAME"` is undefined behavior.
+</Note>
+
+## Insertion
+
+### Basic Insert
+
+Insert a new record into the database:
+
+```swift
+var player = Player(id: nil, name: "Arthur", score: 100)
+try player.insert(db)
+// player.id is now set to the auto-incremented value
+```
+
+### Insert with Conflict Resolution
+
+Handle conflicts when inserting:
+
+```swift
+// Ignore conflicts
+try player.insert(db, onConflict: .ignore)
+
+// Replace existing row
+try player.insert(db, onConflict: .replace)
+
+// Abort on conflict (default)
+try player.insert(db, onConflict: .abort)
+```
+
+<ParamField path="onConflict" type="Database.ConflictResolution">
+  Available conflict resolution strategies:
+  - `.abort` - Abort the operation (default)
+  - `.ignore` - Ignore the conflict
+  - `.replace` - Replace the existing row
+  - `.rollback` - Rollback the transaction
+  - `.fail` - Fail the operation
+</ParamField>
+
+### Insert and Return
+
+For immutable patterns, use `inserted(_:)`:
+
+```swift
+let player = Player(id: nil, name: "Arthur", score: 100)
+let insertedPlayer = try player.inserted(db)
+// insertedPlayer has the auto-incremented id
+```
+
+### Insert and Fetch
+
+Insert a record and fetch the complete row in one operation:
+
+```swift
+struct PartialPlayer: MutablePersistableRecord {
+    static let databaseTableName = "player"
+    var name: String
+    
+    func encode(to container: inout PersistenceContainer) {
+        container["name"] = name
+    }
+}
+
+struct FullPlayer: FetchableRecord, TableRecord {
+    static let databaseTableName = "player"
+    var id: Int64
+    var name: String
+    var score: Int  // Has a default value in the database
+    var createdAt: Date  // Generated column
+}
+
+var partial = PartialPlayer(name: "Arthur")
+let full = try partial.insertAndFetch(db, as: FullPlayer.self)
+print(full.score)  // The default value from the database
+print(full.createdAt)  // The generated timestamp
+```
+
+<Tip>
+  Use `insertAndFetch` when your table has default values, computed columns, or triggers that modify the inserted data.
+</Tip>
+
+## Updating
+
+### Update All Columns
+
+Update an existing record based on its primary key:
+
+```swift
+var player = try Player.fetchOne(db, id: 1)
+player.score = 200
+try player.update(db)
+```
+
+### Update Specific Columns
+
+Update only certain columns:
+
+```swift
+player.score = 200
+player.name = "Arthur II"
+
+// Update only the score column
+try player.update(db, columns: ["score"])
+
+// Or use Column expressions
+try player.update(db, columns: [Column("score")])
+```
+
+### Update Changes Only
+
+Update only the columns that have changed:
+
+```swift
+let oldPlayer = try Player.fetchOne(db, id: 1)
+var newPlayer = oldPlayer
+newPlayer.score = 200
+newPlayer.name = "Arthur II"
+
+let modified = try newPlayer.updateChanges(db, from: oldPlayer)
+if modified {
+    print("Player was updated")
+}
+```
+
+### Update with a Closure
+
+Modify a record with a closure:
+
+```swift
+var player = try Player.fetchOne(db, id: 1)
+
+let modified = try player.updateChanges(db) { record in
+    record.score += 10
+    record.name = record.name.uppercased()
+}
+```
+
+### Update and Fetch
+
+Update and fetch the updated row:
+
+```swift
+var player = try Player.fetchOne(db, id: 1)
+player.score = 200
+
+let updated = try player.updateAndFetch(db)
+print(updated.score)  // Includes any database-side changes
+```
+
+## Saving
+
+The `save(_:)` method inserts or updates depending on whether the record exists:
+
+```swift
+var player = Player(id: nil, name: "Arthur", score: 100)
+
+// First call inserts
+try player.save(db)
+print(player.id) // Some id
+
+// Subsequent calls update
+player.score = 200
+try player.save(db)
+```
+
+<Note>
+  `save(_:)` determines whether to insert or update based on the primary key. If the primary key is nil or doesn't match any row, it inserts. Otherwise, it updates.
+</Note>
+
+### Save and Return
+
+```swift
+let player = Player(id: nil, name: "Arthur", score: 100)
+let savedPlayer = try player.saved(db)
+```
+
+### Save and Fetch
+
+```swift
+var player = Player(id: nil, name: "Arthur", score: 100)
+let savedPlayer = try player.saveAndFetch(db)
+```
+
+## Deletion
+
+Delete a record from the database:
+
+```swift
+var player = try Player.fetchOne(db, id: 1)
+let deleted = try player.delete(db)
+
+if deleted {
+    print("Player was deleted")
+} else {
+    print("Player was not found")
+}
+```
+
+## Upserting
+
+Upsert (insert or update) based on unique constraints:
+
+```swift
+struct Player: MutablePersistableRecord {
+    static let databaseTableName = "player"
+    var email: String  // Unique constraint
+    var name: String
+    var score: Int
+    
+    func encode(to container: inout PersistenceContainer) {
+        container["email"] = email
+        container["name"] = name
+        container["score"] = score
+    }
+}
+
+var player = Player(email: "arthur@example.com", name: "Arthur", score: 100)
+
+// Insert or update based on email uniqueness
+try player.upsert(db)
+```
+
+## Persistence Callbacks
+
+Both protocols provide lifecycle callbacks:
+
+### Insertion Callbacks
+
+```swift
+struct Player: MutablePersistableRecord {
+    var id: Int64?
+    var name: String
+    var createdAt: Date?
+    
+    // Called before insertion
+    mutating func willInsert(_ db: Database) throws {
+        createdAt = Date()
+    }
+    
+    // Called after successful insertion
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+    
+    // Wrap the insertion
+    func aroundInsert(_ db: Database, insert: () throws -> InsertionSuccess) throws {
+        print("About to insert \(name)")
+        try insert()
+        print("Did insert \(name)")
+    }
+}
+```
+
+### Update Callbacks
+
+```swift
+struct Player: MutablePersistableRecord {
+    var updatedAt: Date?
+    
+    // Called before update
+    mutating func willUpdate(_ db: Database, columns: Set<String>) throws {
+        updatedAt = Date()
+    }
+    
+    // Called after successful update
+    func didUpdate(_ updated: PersistenceSuccess) {
+        print("Record was updated")
+    }
+    
+    // Wrap the update
+    func aroundUpdate(
+        _ db: Database,
+        columns: Set<String>,
+        update: () throws -> PersistenceSuccess
+    ) throws {
+        print("Updating columns: \(columns)")
+        try update()
+    }
+}
+```
+
+### Save Callbacks
+
+```swift
+struct Player: MutablePersistableRecord {
+    // Called before save (insert or update)
+    func willSave(_ db: Database) throws {
+        print("About to save")
+    }
+    
+    // Called after successful save
+    func didSave(_ saved: PersistenceSuccess) {
+        print("Did save")
+    }
+    
+    // Wrap the save
+    func aroundSave(
+        _ db: Database,
+        save: () throws -> PersistenceSuccess
+    ) throws {
+        print("Saving...")
+        try save()
+    }
+}
+```
+
+### Deletion Callbacks
+
+```swift
+struct Player: MutablePersistableRecord {
+    // Called before deletion
+    func willDelete(_ db: Database) throws {
+        print("About to delete")
+    }
+    
+    // Called after successful deletion
+    func didDelete(deleted: Bool) {
+        if deleted {
+            print("Was deleted")
+        }
+    }
+    
+    // Wrap the deletion
+    func aroundDelete(
+        _ db: Database,
+        delete: () throws -> Bool
+    ) throws {
+        print("Deleting...")
+        try delete()
+    }
+}
+```
+
+## Conflict Resolution Policy
+
+Define default conflict resolution for your record type:
+
+```swift
+struct Player: MutablePersistableRecord {
+    static var persistenceConflictPolicy: PersistenceConflictPolicy {
+        PersistenceConflictPolicy(
+            insert: .replace,  // Replace on insert conflict
+            update: .abort     // Abort on update conflict
+        )
+    }
+    
+    // ...
+}
+
+// Uses .replace for insertion
+try player.insert(db)
+
+// Override with explicit conflict resolution
+try player.insert(db, onConflict: .ignore)
+```
+
+## Checking Existence
+
+Check if a record exists in the database:
+
+```swift
+let player = Player(id: 42, name: "Arthur", score: 100)
+
+if try player.exists(db) {
+    print("Player exists")
+} else {
+    print("Player does not exist")
+}
+```
+
+## Automatic Conformance with Encodable
+
+If your type conforms to `Encodable`, GRDB automatically provides the `encode(to:)` implementation:
+
+```swift
+struct Player: Encodable {
+    var id: Int64?
+    var name: String
+    var score: Int
+}
+
+// Just add the protocols - no encode(to:) needed!
+extension Player: MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+```
+
+See [Codable Records](/records/codable-records) for more details.
+
+## Full Example
+
+Here's a complete example combining fetching and persistence:
+
+```swift
+struct Player: Codable {
+    var id: Int64?
+    var name: String
+    var score: Int
+    var createdAt: Date?
+}
+
+extension Player: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    mutating func willInsert(_ db: Database) throws {
+        createdAt = Date()
+    }
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+
+try dbQueue.write { db in
+    // Create table
+    try db.execute(sql: """
+        CREATE TABLE player (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            createdAt DATETIME
+        )
+        """)
+    
+    // Insert
+    var player = Player(id: nil, name: "Arthur", score: 100, createdAt: nil)
+    try player.insert(db)
+    print("Inserted player with id: \(player.id!)")
+    
+    // Update
+    player.score = 200
+    try player.update(db)
+    
+    // Fetch
+    if let fetched = try Player.fetchOne(db, id: player.id) {
+        print("Fetched: \(fetched.name), score: \(fetched.score)")
+    }
+    
+    // Delete
+    try player.delete(db)
+}
+```
+
+## Best Practices
+
+<Tip>
+  **Use MutablePersistableRecord for structs**: Swift structs with value semantics work well with `MutablePersistableRecord`. The mutating callbacks let you capture auto-incremented IDs.
+</Tip>
+
+<Tip>
+  **Leverage Codable**: If your type conforms to `Codable`, you don't need to implement `encode(to:)` manually. GRDB provides it automatically.
+</Tip>
+
+<Warning>
+  **Primary keys are required for updates and deletes**: The `update(_:)` and `delete(_:)` methods require a primary key to identify which row to modify. Make sure your table has a primary key defined.
+</Warning>
+
+<Note>
+  **Use `updateChanges` for efficiency**: When you only want to update modified columns, use `updateChanges(_:from:)` or `updateChanges(_:modify:)` instead of `update(_:)`.
+</Note>
+
+## Related Topics
+
+- [FetchableRecord](/records/fetchable-record) - Fetch records from the database
+- [Codable Records](/records/codable-records) - Use Swift Codable for automatic conformance
+- [Transactions](/database-connections/transactions) - Group persistence operations

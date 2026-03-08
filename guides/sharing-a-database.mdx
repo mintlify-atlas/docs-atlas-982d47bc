@@ -1,0 +1,431 @@
+---
+title: Sharing a Database
+description: Share SQLite databases between multiple processes
+---
+
+This guide describes how to share an SQLite database between multiple processes, with recommendations for App Group containers, app extensions, app sandbox, and file coordination.
+
+## Overview
+
+Sharing a database between processes (such as between your app and an app extension) creates challenges:
+
+1. **Database setup** may be attempted by multiple processes concurrently
+2. **SQLite** may throw `SQLITE_BUSY` errors ("database is locked")
+3. **iOS** may kill your app with a `0xDEAD10CC` exception
+4. **GRDB observation** doesn't detect changes from external processes
+
+<Warning>
+Preventing errors from database sharing is difficult, extremely difficult on iOS, and almost impossible to test.
+
+**Always consider alternatives** like sharing plain files or using other inter-process communication techniques before sharing an SQLite database.
+</Warning>
+
+## Use the WAL Mode
+
+To access a shared database, use a `DatabasePool`. It opens the database in [WAL mode](https://www.sqlite.org/wal.html), which allows concurrent access from multiple processes.
+
+You can also use `DatabaseQueue` with the `.wal` journal mode:
+
+```swift
+var config = Configuration()
+config.journalMode = .wal
+let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+```
+
+Since multiple processes may open the database simultaneously, protect database creation with `NSFileCoordinator`.
+
+### Write-Capable Process
+
+In a process that can create and write to the database:
+
+```swift
+import Foundation
+import GRDB
+
+/// Returns an initialized database pool at the shared location
+func openSharedDatabase(at databaseURL: URL) throws -> DatabasePool {
+    let coordinator = NSFileCoordinator(filePresenter: nil)
+    var coordinatorError: NSError?
+    var dbPool: DatabasePool?
+    var dbError: Error?
+    
+    coordinator.coordinate(writingItemAt: databaseURL, options: .forMerging, error: &coordinatorError) { url in
+        do {
+            dbPool = try openDatabase(at: url)
+        } catch {
+            dbError = error
+        }
+    }
+    
+    if let error = dbError ?? coordinatorError {
+        throw error
+    }
+    return dbPool!
+}
+
+private func openDatabase(at databaseURL: URL) throws -> DatabasePool {
+    var configuration = Configuration()
+    configuration.prepareDatabase { db in
+        // Activate persistent WAL mode so that read-only processes can access the database
+        if db.configuration.readonly == false {
+            var flag: CInt = 1
+            let code = withUnsafeMutablePointer(to: &flag) { flagP in
+                sqlite3_file_control(db.sqliteConnection, nil, SQLITE_FCNTL_PERSIST_WAL, flagP)
+            }
+            guard code == SQLITE_OK else {
+                throw DatabaseError(resultCode: ResultCode(rawValue: code))
+            }
+        }
+    }
+    
+    let dbPool = try DatabasePool(path: databaseURL.path, configuration: configuration)
+    
+    // Perform database setup (migrations, etc.)
+    try migrator.migrate(dbPool)
+    if try dbPool.read(migrator.hasBeenSuperseded) {
+        throw DatabaseError(message: "Database is too recent")
+    }
+    
+    return dbPool
+}
+```
+
+### Read-Only Process
+
+In a process that only reads from the database:
+
+```swift
+/// Returns an initialized read-only database pool, or nil if unavailable
+func openSharedReadOnlyDatabase(at databaseURL: URL) throws -> DatabasePool? {
+    let coordinator = NSFileCoordinator(filePresenter: nil)
+    var coordinatorError: NSError?
+    var dbPool: DatabasePool?
+    var dbError: Error?
+    
+    coordinator.coordinate(readingItemAt: databaseURL, options: .withoutChanges, error: &coordinatorError) { url in
+        do {
+            dbPool = try openReadOnlyDatabase(at: url)
+        } catch {
+            dbError = error
+        }
+    }
+    
+    if let error = dbError ?? coordinatorError {
+        throw error
+    }
+    return dbPool
+}
+
+private func openReadOnlyDatabase(at databaseURL: URL) throws -> DatabasePool? {
+    do {
+        var configuration = Configuration()
+        configuration.readonly = true
+        let dbPool = try DatabasePool(path: databaseURL.path, configuration: configuration)
+        
+        // Check database schema version
+        return try dbPool.read { db in
+            if try migrator.hasBeenSuperseded(db) {
+                // Database is too recent
+                return nil
+            } else if try migrator.hasCompletedMigrations(db) == false {
+                // Database is too old
+                return nil
+            }
+            return dbPool
+        }
+    } catch {
+        if FileManager.default.fileExists(atPath: databaseURL.path) {
+            throw error
+        } else {
+            return nil
+        }
+    }
+}
+```
+
+## Persistent WAL Mode
+
+Read-only connections require two companion files (`-shm` and `-wal`) to exist next to the database file. These files are normally deleted when connections close, which breaks read-only access.
+
+The solution is to enable **persistent WAL mode** using `SQLITE_FCNTL_PERSIST_WAL`:
+
+```swift
+var flag: CInt = 1
+let code = withUnsafeMutablePointer(to: &flag) { flagP in
+    sqlite3_file_control(db.sqliteConnection, nil, SQLITE_FCNTL_PERSIST_WAL, flagP)
+}
+guard code == SQLITE_OK else {
+    throw DatabaseError(resultCode: ResultCode(rawValue: code))
+}
+```
+
+This ensures the `-shm` and `-wal` files are never deleted, guaranteeing read-only connections work reliably.
+
+## Limiting SQLITE_BUSY Errors
+
+When multiple processes write to the database, configure a busy timeout:
+
+```swift
+var configuration = Configuration()
+config.busyMode = .timeout(5.0) // Wait up to 5 seconds
+let dbPool = try DatabasePool(path: dbPath, configuration: configuration)
+```
+
+The busy timeout makes write transactions wait instead of immediately failing with `SQLITE_BUSY`.
+
+You can catch remaining busy errors:
+
+```swift
+do {
+    try dbPool.write { db in
+        // Write operations
+    }
+} catch DatabaseError.SQLITE_BUSY {
+    // Another process has locked the database
+    print("Database is busy, try again later")
+}
+```
+
+## Preventing 0xDEAD10CC Exceptions
+
+The `0xDEAD10CC` exception ("dead lock") occurs when iOS terminates your app for holding a database lock during suspension.
+
+### If Using SQLCipher
+
+Use SQLCipher 4+ with the `cipher_plaintext_header_size` pragma:
+
+```swift
+var configuration = Configuration()
+config.prepareDatabase { db in
+    try db.usePassphrase("secret")
+    try db.execute(sql: "PRAGMA cipher_plaintext_header_size = 32")
+}
+let dbPool = try DatabasePool(path: dbPath, configuration: configuration)
+```
+
+<Note>
+Applications must manage the salt themselves. See [SQLCipher documentation](https://www.zetetic.net/sqlcipher/sqlcipher-api/#cipher_plaintext_header_size).
+</Note>
+
+### For All Databases
+
+<Warning>
+The technique below is **EXPERIMENTAL**. Use with caution.
+</Warning>
+
+Enable suspension observation:
+
+```swift
+var configuration = Configuration()
+config.observesSuspensionNotifications = true
+let dbPool = try DatabasePool(path: dbPath, configuration: configuration)
+```
+
+Post `Database.suspendNotification` when the app is about to be suspended:
+
+```swift
+class AppDelegate: UIResponder, UIApplicationDelegate {
+    func applicationDidEnterBackground(_ application: UIApplication) {
+        NotificationCenter.default.post(
+            name: Database.suspendNotification,
+            object: self
+        )
+    }
+}
+```
+
+Handle suspension errors:
+
+```swift
+do {
+    try dbPool.write { db in
+        // Database operations
+    }
+} catch DatabaseError.SQLITE_INTERRUPT, DatabaseError.SQLITE_ABORT {
+    // Database is suspended
+    print("Database suspended, will retry when resumed")
+}
+```
+
+Post `Database.resumeNotification` when resuming:
+
+```swift
+func applicationWillEnterForeground(_ application: UIApplication) {
+    NotificationCenter.default.post(
+        name: Database.resumeNotification,
+        object: self
+    )
+}
+```
+
+## App Group Containers
+
+Share databases between your app and extensions using App Group containers:
+
+```swift
+if let containerURL = FileManager.default.containerURL(
+    forSecurityApplicationGroupIdentifier: "group.com.example.myapp"
+) {
+    let databaseURL = containerURL.appendingPathComponent("shared.sqlite")
+    let dbPool = try openSharedDatabase(at: databaseURL)
+}
+```
+
+### App Group Setup
+
+1. In Xcode, go to target **Signing & Capabilities**
+2. Add **App Groups** capability
+3. Create or select an app group (e.g., `group.com.example.myapp`)
+4. Add the same app group to your extension targets
+
+## Cross-Process Observation
+
+GRDB's observation features don't detect changes from other processes. Use cross-process notifications:
+
+### Notify on Changes
+
+In the process that writes:
+
+```swift
+import GRDB
+
+// Observe all database changes
+let observation = DatabaseRegionObservation(tracking: .fullDatabase)
+let observer = try observation.start(in: dbPool) { db in
+    // Post a Darwin notification
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFNotificationName("com.example.myapp.dbchange" as CFString),
+        nil, nil, true
+    )
+}
+```
+
+Or observe specific tables:
+
+```swift
+// Observe only player and team changes
+let observation = DatabaseRegionObservation(tracking: Player.all(), Team.all())
+let observer = try observation.start(in: dbPool) { db in
+    // Notify other processes
+    postCrossProcessNotification()
+}
+```
+
+### Receive Notifications
+
+In other processes:
+
+```swift
+import Foundation
+
+let center = CFNotificationCenterGetDarwinNotifyCenter()
+let observer = UnsafeRawPointer(Unmanaged.passUnretained(self).toOpaque())
+
+CFNotificationCenterAddObserver(
+    center,
+    observer,
+    { center, observer, name, object, userInfo in
+        // Database changed in another process
+        // Refresh your data
+    },
+    "com.example.myapp.dbchange" as CFString,
+    nil,
+    .deliverImmediately
+)
+```
+
+Alternatively, use `NSFileCoordinator` for file-based coordination.
+
+## Best Practices
+
+1. **Use WAL mode** - Essential for concurrent access
+2. **Enable persistent WAL** - Required for read-only processes
+3. **Use NSFileCoordinator** - Protect database creation
+4. **Set busy timeouts** - Handle concurrent writes gracefully
+5. **Handle suspension** - Prevent 0xDEAD10CC on iOS
+6. **Use app groups** - Proper container for shared databases
+7. **Implement cross-process notifications** - Keep processes in sync
+8. **Version your schema** - Check compatibility between processes
+9. **Consider alternatives** - Sharing databases is complex
+
+## Common Patterns
+
+### Main App + Extension
+
+```swift
+// Shared code for both targets
+class DatabaseManager {
+    static let shared = DatabaseManager()
+    let dbPool: DatabasePool
+    
+    private init() {
+        let containerURL = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: "group.com.example.myapp"
+        )!
+        let databaseURL = containerURL.appendingPathComponent("app.sqlite")
+        
+        do {
+            dbPool = try openSharedDatabase(at: databaseURL)
+        } catch {
+            fatalError("Database error: \(error)")
+        }
+    }
+}
+
+// Use in main app
+let players = try DatabaseManager.shared.dbPool.read { db in
+    try Player.fetchAll(db)
+}
+
+// Use in extension
+let latestPlayer = try DatabaseManager.shared.dbPool.read { db in
+    try Player.order(Column("createdAt").desc).fetchOne(db)
+}
+```
+
+### Multiple Read-Only Extensions
+
+```swift
+// Main app (read-write)
+let dbPool = try openSharedDatabase(at: databaseURL)
+
+// Extension 1 (read-only)
+let dbPool = try openSharedReadOnlyDatabase(at: databaseURL)
+
+// Extension 2 (read-only)  
+let dbPool = try openSharedReadOnlyDatabase(at: databaseURL)
+```
+
+## Troubleshooting
+
+### "Database is locked" Errors
+
+- Increase busy timeout
+- Verify WAL mode is enabled
+- Check file permissions
+- Ensure proper file coordination
+
+### Read-Only Connection Fails
+
+- Enable persistent WAL mode
+- Verify `-shm` and `-wal` files exist
+- Check that write process opened first
+
+### 0xDEAD10CC Crashes
+
+- Implement suspension notifications
+- Use SQLCipher 4 with plaintext header
+- Release database locks before suspension
+
+### Changes Not Visible
+
+- Implement cross-process notifications
+- Verify both processes use WAL mode
+- Check that changes are committed
+
+## See Also
+
+- [Encryption](/guides/encryption) - SQLCipher for shared encrypted databases
+- [Concurrency](/advanced/concurrency) - Thread-safe database access
+- [Database Observation](/advanced/database-observation) - Observing changes

@@ -1,0 +1,439 @@
+---
+title: "Associations"
+description: "Define relationships between database tables"
+---
+
+Associations define connections between database tables, enabling joins and eager loading of related records.
+
+## Overview
+
+GRDB supports several association types:
+
+```swift
+struct Author: TableRecord {
+    static let books = hasMany(Book.self)
+}
+
+struct Book: TableRecord {
+    static let author = belongsTo(Author.self)
+    static let awards = hasMany(Award.self)
+}
+
+struct Award: TableRecord {
+    static let book = belongsTo(Book.self)
+}
+```
+
+## Association Types
+
+### BelongsTo
+
+Defines a one-to-one connection where the foreign key is in the current table.
+
+```swift
+struct Book: TableRecord {
+    // Book has an authorId column
+    static let author = belongsTo(Author.self)
+}
+
+struct Author: TableRecord {
+    static let databaseTableName = "author"
+}
+
+// JOIN author ON author.id = book.authorId
+let request = Book.joining(required: Book.author)
+```
+
+### HasMany
+
+Defines a one-to-many connection where the foreign key is in the associated table.
+
+```swift
+struct Author: TableRecord {
+    static let books = hasMany(Book.self)
+}
+
+struct Book: TableRecord {
+    // Book has an authorId column
+}
+
+// Include all books for each author
+let request = Author.including(all: Author.books)
+```
+
+### HasOne
+
+Defines a one-to-one connection where the foreign key is in the associated table.
+
+```swift
+struct Country: TableRecord {
+    static let capital = hasOne(City.self, key: "capital")
+}
+
+struct City: TableRecord {
+    // City has a countryId column
+}
+```
+
+### HasManyThrough
+
+Defines a many-to-many connection through a join table.
+
+```swift
+struct Book: TableRecord {
+    static let awards = hasMany(BookAward.self)
+    static let honoredBy = hasMany(
+        Award.self,
+        through: awards,
+        using: BookAward.award
+    )
+}
+
+struct BookAward: TableRecord {
+    static let book = belongsTo(Book.self)
+    static let award = belongsTo(Award.self)
+}
+
+struct Award: TableRecord { }
+```
+
+### HasOneThrough
+
+Defines a one-to-one connection through another association.
+
+```swift
+struct Book: TableRecord {
+    static let author = belongsTo(Author.self)
+    static let country = hasOne(
+        Country.self,
+        through: author,
+        using: Author.country
+    )
+}
+
+struct Author: TableRecord {
+    static let country = belongsTo(Country.self)
+}
+```
+
+## Customizing Associations
+
+### Custom Foreign Keys
+
+```swift
+struct Book: TableRecord {
+    static let author = belongsTo(
+        Author.self,
+        key: "author",
+        using: ForeignKey(["authorId"])
+    )
+}
+```
+
+### Custom Keys
+
+Assign a custom key to access associated records:
+
+```swift
+struct Author: TableRecord {
+    static let publishedBooks = hasMany(Book.self)
+        .filter(Column("publishedAt") != nil)
+        .forKey("publishedBooks")
+}
+
+let request = Author.including(all: Author.publishedBooks)
+for row in try Row.fetchAll(db, request) {
+    let author: Author = row["author"]
+    let books: [Book] = row["publishedBooks"]
+}
+```
+
+## Using Associations
+
+### Joining Tables
+
+#### joining(required:)
+
+Inner join - excludes records without associated records:
+
+```swift
+// SELECT book.* FROM book
+// INNER JOIN author ON author.id = book.authorId
+let request = Book.joining(required: Book.author)
+let books = try Book.fetchAll(db, request)
+```
+
+#### joining(optional:)
+
+Left join - includes records even without associated records:
+
+```swift
+// SELECT book.* FROM book
+// LEFT JOIN author ON author.id = book.authorId
+let request = Book.joining(optional: Book.author)
+```
+
+### Including Associated Records
+
+#### including(required:)
+
+Fetches main and associated records (inner join):
+
+```swift
+let request = Book.including(required: Book.author)
+for row in try Row.fetchAll(db, request) {
+    let book: Book = row["book"]
+    let author: Author = row["author"]
+}
+```
+
+#### including(optional:)
+
+Fetches main and optionally associated records (left join):
+
+```swift
+let request = Book.including(optional: Book.author)
+for row in try Row.fetchAll(db, request) {
+    let book: Book = row["book"]
+    let author: Author? = row["author"]
+}
+```
+
+#### including(all:)
+
+Prefetches all associated records:
+
+```swift
+let request = Author.including(all: Author.books)
+for row in try Row.fetchAll(db, request) {
+    let author: Author = row["author"]
+    let books: [Book] = row["books"]
+}
+```
+
+<Note>
+Use `including(all:)` for has-many associations to avoid N+1 queries.
+</Note>
+
+### Filtering Through Associations
+
+```swift
+// Books by authors from USA
+let request = Book
+    .joining(required: Book.author
+        .filter(Column("countryCode") == "USA"))
+
+// Authors with at least one published book
+let request = Author
+    .having(Author.books.filter(Column("publishedAt") != nil).isEmpty == false)
+```
+
+### Ordering Through Associations
+
+```swift
+// Books ordered by author name
+let request = Book
+    .joining(required: Book.author)
+    .order(Book.author.select(Column("name")))
+```
+
+### Aggregating Associated Records
+
+```swift
+// Authors with book count
+let request = Author.annotated(with: Author.books.count)
+for row in try Row.fetchAll(db, request) {
+    let author: Author = row["author"]
+    let bookCount: Int = row["bookCount"]
+}
+
+// Authors with average book rating
+let request = Author.annotated(with: {
+    Author.books.average(Column("rating")).forKey("averageRating")
+})
+```
+
+## Association Aggregates
+
+### count
+
+```swift
+Author.books.count // Number of books
+```
+
+### isEmpty
+
+```swift
+Author.books.isEmpty // Whether author has no books
+```
+
+### min, max
+
+```swift
+Author.books.min(Column("publishedAt"))
+Author.books.max(Column("publishedAt"))
+```
+
+### average, sum
+
+```swift
+Author.books.average(Column("rating"))
+Author.books.sum(Column("pageCount"))
+```
+
+## Decodable Records with Associations
+
+```swift
+struct AuthorInfo: Decodable, FetchableRecord {
+    var author: Author
+    var books: [Book]
+}
+
+let request = Author
+    .including(all: Author.books)
+    .asRequest(of: AuthorInfo.self)
+
+let infos = try AuthorInfo.fetchAll(db, request)
+for info in infos {
+    print("\(info.author.name): \(info.books.count) books")
+}
+```
+
+## Self-Referencing Associations
+
+```swift
+struct Employee: TableRecord {
+    static let manager = belongsTo(Employee.self, key: "manager")
+    static let subordinates = hasMany(Employee.self, key: "subordinates")
+}
+
+let request = Employee
+    .including(optional: Employee.manager)
+    .including(all: Employee.subordinates)
+```
+
+## Polymorphic Associations
+
+```swift
+struct Comment: TableRecord {
+    // commentableType: "Post" or "Video"
+    // commentableId: id of post or video
+}
+
+struct Post: TableRecord {
+    static let comments = hasMany(
+        Comment.self,
+        key: "comments"
+    ).filter(Column("commentableType") == "Post")
+}
+
+struct Video: TableRecord {
+    static let comments = hasMany(
+        Comment.self,
+        key: "comments"
+    ).filter(Column("commentableType") == "Video")
+}
+```
+
+## Complex Joins
+
+### Multiple Associations
+
+```swift
+let request = Book
+    .including(required: Book.author)
+    .including(all: Book.awards)
+
+for row in try Row.fetchAll(db, request) {
+    let book: Book = row["book"]
+    let author: Author = row["author"]
+    let awards: [Award] = row["awards"]
+}
+```
+
+### Nested Associations
+
+```swift
+struct Country: TableRecord {
+    static let authors = hasMany(Author.self)
+}
+
+struct Author: TableRecord {
+    static let country = belongsTo(Country.self)
+    static let books = hasMany(Book.self)
+}
+
+struct Book: TableRecord {
+    static let author = belongsTo(Author.self)
+}
+
+// Books with their authors and countries
+let request = Book
+    .including(required: Book.author
+        .including(required: Author.country))
+
+for row in try Row.fetchAll(db, request) {
+    let book: Book = row["book"]
+    let author: Author = row["author"]
+    let country: Country = row["country"]
+}
+```
+
+## Association Keys
+
+Customize how associated records are accessed:
+
+```swift
+struct Author: TableRecord {
+    static let books = hasMany(Book.self).forKey("writtenBooks")
+}
+
+let request = Author.including(all: Author.books)
+for row in try Row.fetchAll(db, request) {
+    let books: [Book] = row["writtenBooks"]
+}
+```
+
+## Performance Tips
+
+<Tip>
+Use `including(all:)` instead of fetching in a loop to avoid N+1 queries:
+
+```swift
+// Bad - N+1 queries
+let authors = try Author.fetchAll(db)
+for author in authors {
+    let books = try author.books.fetchAll(db) // One query per author!
+}
+
+// Good - 1 query
+let request = Author.including(all: Author.books)
+let rows = try Row.fetchAll(db, request)
+```
+</Tip>
+
+<Tip>
+Use `joining` when you don't need the associated records:
+
+```swift
+// Just filter, don't fetch authors
+let books = try Book
+    .joining(required: Book.author.filter(Column("countryCode") == "USA"))
+    .fetchAll(db)
+```
+</Tip>
+
+<Warning>
+Deeply nested associations can generate complex SQL. Profile your queries and consider denormalization for frequently accessed data.
+</Warning>
+
+## Related Topics
+
+- [`TableRecord`](/api/table-record) - Required for associations
+- [`query-interface`](/api/query-interface) - Building queries
+- [`FetchableRecord`](/api/fetchable-record) - Decoding records
+
+## See Also
+
+- [Associations Guide](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/associations)
+- [Recommended Practices for Designing Record Types](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/recordrecommendedpractices)

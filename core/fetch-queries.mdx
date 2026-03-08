@@ -1,0 +1,523 @@
+---
+title: Fetch Queries
+description: Learn how to fetch rows, values, and records from the database
+---
+
+GRDB provides powerful methods to fetch data from your SQLite database. You can fetch raw rows, plain values, or custom model objects (records).
+
+## Fetching Methods
+
+Throughout GRDB, you can fetch **cursors**, **arrays**, **sets**, or **single values**:
+
+```swift
+try Row.fetchCursor(db, sql: "SELECT ...")  // A Cursor of Row
+try Row.fetchAll(db, sql: "SELECT ...")     // [Row]
+try Row.fetchSet(db, sql: "SELECT ...")     // Set<Row>
+try Row.fetchOne(db, sql: "SELECT ...")     // Row?
+```
+
+### Method Comparison
+
+| Method | Returns | Memory Usage | Use Case |
+|--------|---------|--------------|----------|
+| `fetchCursor` | Cursor | Low | Large result sets, one-time iteration |
+| `fetchAll` | Array | High | Multiple iterations, full result needed |
+| `fetchSet` | Set | High | Unique values, no order needed |
+| `fetchOne` | Optional | Low | Single row queries |
+
+## Fetching Rows
+
+Rows are the raw results of SQL queries:
+
+<Tabs>
+  <Tab title="fetchCursor">
+    ```swift
+    try dbQueue.read { db in
+        let rows = try Row.fetchCursor(db, sql: "SELECT * FROM player")
+        while let row = try rows.next() {
+            let id: Int64 = row["id"]
+            let name: String = row["name"]
+            let score: Int = row["score"]
+            print("\(name): \(score)")
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="fetchAll">
+    ```swift
+    try dbQueue.read { db in
+        let rows = try Row.fetchAll(db, sql: "SELECT * FROM player")
+        for row in rows {
+            let name: String = row["name"]
+            print(name)
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="fetchOne">
+    ```swift
+    try dbQueue.read { db in
+        if let row = try Row.fetchOne(db, 
+            sql: "SELECT * FROM player WHERE id = ?",
+            arguments: [1]) {
+            let name: String = row["name"]
+            print(name)
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Reading Column Values
+
+Read column values by index or name:
+
+```swift
+let row = try Row.fetchOne(db, sql: "SELECT id, name, score FROM player")!
+
+// By index (0 is leftmost column)
+let id: Int64 = row[0]
+
+// By column name (case-insensitive)
+let name: String = row["name"]
+let score: Int = row["score"]
+
+// Optional values
+let email: String? = row["email"]  // nil if column is NULL
+```
+
+### Type Conversions
+
+```swift
+let row = try Row.fetchOne(db, sql: "SELECT bookCount FROM author")!
+
+// Different numeric types
+let count: Int = row["bookCount"]
+let count64: Int64 = row["bookCount"]
+let hasBooks: Bool = row["bookCount"]  // false when 0
+
+// Date conversions
+let dateString: String = row["date"]  // "2015-09-11 18:14:15.123"
+let date: Date = row["date"]          // Date instance
+```
+
+<Warning>
+  Invalid conversions throw a fatal error. Use `DatabaseValue` for safe conversions when dealing with untrusted data.
+</Warning>
+
+## Fetching Values
+
+Fetch values directly without dealing with rows:
+
+<CodeGroup>
+```swift Fetch Single Value
+try dbQueue.read { db in
+    // Returns Int?
+    let count = try Int.fetchOne(db, 
+        sql: "SELECT COUNT(*) FROM player")
+    print(count ?? 0)
+}
+```
+
+```swift Fetch Array
+try dbQueue.read { db in
+    // Returns [String]
+    let names = try String.fetchAll(db, 
+        sql: "SELECT name FROM player")
+    print(names)
+}
+```
+
+```swift Fetch Set
+try dbQueue.read { db in
+    // Returns Set<String>
+    let uniqueTeams = try String.fetchSet(db, 
+        sql: "SELECT DISTINCT team FROM player")
+    print(uniqueTeams)
+}
+```
+
+```swift Fetch Cursor
+try dbQueue.read { db in
+    let urls = try URL.fetchCursor(db, 
+        sql: "SELECT url FROM link")
+    while let url = try urls.next() {
+        print(url)
+    }
+}
+```
+</CodeGroup>
+
+### Handling NULL Values
+
+`fetchOne` returns nil in two cases:
+
+```swift
+// No row returned
+let result1 = try Int.fetchOne(db, sql: "SELECT 42 WHERE FALSE")  // nil
+
+// NULL value returned
+let result2 = try Int.fetchOne(db, sql: "SELECT NULL")  // nil
+
+// Non-NULL value returned
+let result3 = try Int.fetchOne(db, sql: "SELECT 42")  // 42
+```
+
+To distinguish between these cases:
+
+```swift
+let result = try Optional<Int>.fetchOne(db, sql: "SELECT ...")
+
+switch result {
+case .none:
+    print("No row")
+case .some(.none):
+    print("NULL value")
+case .some(.some(let value)):
+    print("Value: \(value)")
+}
+```
+
+## Fetching Records
+
+Records are your custom application objects:
+
+```swift
+struct Player: FetchableRecord {
+    let id: Int64
+    let name: String
+    let score: Int
+    
+    init(row: Row) {
+        id = row["id"]
+        name = row["name"]
+        score = row["score"]
+    }
+}
+
+try dbQueue.read { db in
+    // Fetch all players
+    let players = try Player.fetchAll(db, 
+        sql: "SELECT * FROM player")
+    
+    // Fetch one player
+    let player = try Player.fetchOne(db, 
+        sql: "SELECT * FROM player WHERE id = ?",
+        arguments: [1])
+}
+```
+
+### Using Codable
+
+With Codable, you get automatic row decoding:
+
+```swift
+struct Player: Codable, FetchableRecord {
+    let id: Int64
+    let name: String
+    let score: Int
+}
+
+try dbQueue.read { db in
+    let players = try Player.fetchAll(db, 
+        sql: "SELECT * FROM player")
+}
+```
+
+## Cursors
+
+Cursors load results step-by-step for memory efficiency:
+
+### Cursor Characteristics
+
+- ✅ Low memory usage
+- ✅ Fast for large result sets
+- ❌ Can only be iterated once
+- ❌ Must be consumed on the same thread
+- ❌ Cannot be extracted from database access methods
+
+```swift
+try dbQueue.read { db in
+    let cursor = try Player.fetchCursor(db, sql: "SELECT * FROM player")
+    
+    // Iterate once
+    while let player = try cursor.next() {
+        print(player.name)
+    }
+    
+    // Can't iterate again - cursor is exhausted
+}
+```
+
+### Cursor Methods
+
+Cursors provide many convenience methods:
+
+```swift
+try dbQueue.read { db in
+    let cursor = try Player.fetchCursor(db, sql: "SELECT * FROM player")
+    
+    // Filter
+    let filteredCursor = cursor.filter { $0.score > 1000 }
+    
+    // Map
+    let names = cursor.map { $0.name }
+    
+    // Reduce
+    let totalScore = try cursor.reduce(0) { $0 + $1.score }
+    
+    // First
+    let firstPlayer = try cursor.first()
+}
+```
+
+### Converting Cursors to Collections
+
+```swift
+try dbQueue.read { db in
+    let cursor = try String.fetchCursor(db, 
+        sql: "SELECT name FROM player")
+    
+    // To array
+    let array = try Array(cursor)
+    
+    // To set
+    let set = try Set(cursor)
+    
+    // To dictionary
+    let cursor = try Player.fetchCursor(db, sql: "SELECT * FROM player")
+    let dict = try Dictionary(grouping: cursor, by: { $0.team })
+}
+```
+
+## Query Arguments
+
+### Positional Arguments
+
+```swift
+try dbQueue.read { db in
+    let players = try Player.fetchAll(db,
+        sql: "SELECT * FROM player WHERE name = ? AND score > ?",
+        arguments: ["Arthur", 1000])
+}
+```
+
+### Named Arguments
+
+```swift
+try dbQueue.read { db in
+    let players = try Player.fetchAll(db,
+        sql: "SELECT * FROM player WHERE name = :name AND score > :score",
+        arguments: ["name": "Arthur", "score": 1000])
+}
+```
+
+### SQL Interpolation
+
+```swift
+try dbQueue.read { db in
+    let name = "Arthur"
+    let minScore = 1000
+    
+    let players = try Player.fetchAll(db, literal: """
+        SELECT * FROM player 
+        WHERE name = \(name) AND score > \(minScore)
+        """)
+}
+```
+
+## Common Query Patterns
+
+<Tabs>
+  <Tab title="Aggregates">
+    ```swift
+    try dbQueue.read { db in
+        let count = try Int.fetchOne(db, 
+            sql: "SELECT COUNT(*) FROM player")!
+        
+        let avgScore = try Double.fetchOne(db, 
+            sql: "SELECT AVG(score) FROM player")
+        
+        let maxScore = try Int.fetchOne(db, 
+            sql: "SELECT MAX(score) FROM player")
+    }
+    ```
+  </Tab>
+  <Tab title="Grouping">
+    ```swift
+    struct TeamStats: FetchableRecord {
+        let team: String
+        let playerCount: Int
+        let totalScore: Int
+        
+        init(row: Row) {
+            team = row["team"]
+            playerCount = row["playerCount"]
+            totalScore = row["totalScore"]
+        }
+    }
+    
+    try dbQueue.read { db in
+        let stats = try TeamStats.fetchAll(db, sql: """
+            SELECT team, 
+                   COUNT(*) as playerCount,
+                   SUM(score) as totalScore
+            FROM player
+            GROUP BY team
+            """)
+    }
+    ```
+  </Tab>
+  <Tab title="Joins">
+    ```swift
+    struct PlayerWithTeam: FetchableRecord {
+        let playerName: String
+        let teamName: String
+        let score: Int
+        
+        init(row: Row) {
+            playerName = row["playerName"]
+            teamName = row["teamName"]
+            score = row["score"]
+        }
+    }
+    
+    try dbQueue.read { db in
+        let results = try PlayerWithTeam.fetchAll(db, sql: """
+            SELECT p.name as playerName, 
+                   t.name as teamName, 
+                   p.score
+            FROM player p
+            INNER JOIN team t ON p.teamId = t.id
+            """)
+    }
+    ```
+  </Tab>
+  <Tab title="Subqueries">
+    ```swift
+    try dbQueue.read { db in
+        let topPlayers = try Player.fetchAll(db, sql: """
+            SELECT * FROM player
+            WHERE score > (
+                SELECT AVG(score) FROM player
+            )
+            ORDER BY score DESC
+            """)
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## The Query Interface
+
+For type-safe queries without SQL, use the Query Interface:
+
+```swift
+struct Player: Codable, FetchableRecord, TableRecord {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    enum Columns {
+        static let name = Column(CodingKeys.name)
+        static let score = Column(CodingKeys.score)
+    }
+}
+
+try dbQueue.read { db in
+    // Find by primary key
+    let player = try Player.fetchOne(db, id: 1)
+    
+    // Filter and order
+    let topPlayers = try Player
+        .filter(Player.Columns.score > 1000)
+        .order(Player.Columns.score.desc)
+        .limit(10)
+        .fetchAll(db)
+    
+    // Count
+    let count = try Player
+        .filter(Player.Columns.score > 500)
+        .fetchCount(db)
+}
+```
+
+See the [Query Interface](/query-interface/overview) documentation for more information.
+
+## Error Handling
+
+```swift
+do {
+    try dbQueue.read { db in
+        let players = try Player.fetchAll(db, sql: "SELECT * FROM player")
+    }
+} catch let error as DatabaseError {
+    print("Database error: \(error.message ?? "")")
+    print("SQL: \(error.sql ?? "")")
+} catch {
+    print("Unexpected error: \(error)")
+}
+```
+
+## Performance Tips
+
+<Tabs>
+  <Tab title="Use Cursors">
+    For large result sets, prefer cursors over arrays:
+    
+    ```swift
+    try dbQueue.read { db in
+        let cursor = try Player.fetchCursor(db, 
+            sql: "SELECT * FROM player")
+        while let player = try cursor.next() {
+            // Process one at a time
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="Limit Results">
+    Always limit results when you don't need all rows:
+    
+    ```swift
+    try dbQueue.read { db in
+        let recentPlayers = try Player.fetchAll(db, sql: """
+            SELECT * FROM player 
+            ORDER BY created_at DESC 
+            LIMIT 100
+            """)
+    }
+    ```
+  </Tab>
+  <Tab title="Use Indexes">
+    Ensure frequently queried columns have indexes:
+    
+    ```swift
+    try dbQueue.write { db in
+        try db.execute(sql: """
+            CREATE INDEX idx_player_score 
+            ON player(score)
+            """)
+    }
+    ```
+  </Tab>
+  <Tab title="Prepare Statements">
+    Reuse prepared statements for repeated queries:
+    
+    ```swift
+    try dbQueue.read { db in
+        let statement = try db.makeStatement(
+            sql: "SELECT * FROM player WHERE id = ?")
+        
+        for id in [1, 2, 3] {
+            let player = try Player.fetchOne(statement, arguments: [id])
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Next Steps
+
+- [Transactions](/core/transactions) - Learn about transactions and savepoints
+- [Records](/records/overview) - Learn about FetchableRecord and PersistableRecord
+- [Query Interface](/query-interface/overview) - Type-safe queries without SQL

@@ -1,0 +1,174 @@
+---
+title: Migration Guides
+description: Guides for migrating between major versions of GRDB
+icon: arrow-right-arrow-left
+---
+
+GRDB provides detailed migration guides to help you upgrade between major versions. Each guide includes breaking changes, new features, and recommendations for improving your application.
+
+## Latest Migration Guide
+
+<Card title="Migrating from GRDB 6 to GRDB 7" icon="7" href="https://github.com/groue/GRDB.swift/blob/master/Documentation/GRDB7MigrationGuide.md">
+  The complete guide for upgrading to GRDB 7 with Swift 6 support
+</Card>
+
+## GRDB 7 Migration Highlights
+
+GRDB 7 brings full support for Swift 6 and requires **Xcode 16.3+** and **Swift 6.1+**.
+
+### New Requirements
+
+- **Swift Compiler**: 6.1+ (was Swift 5.7+)
+- **Xcode**: 16.3+ (was Xcode 14.0+)
+- **iOS**: 13.0+ (was 11.0+)
+- **macOS**: 10.15+ (was 10.13+)
+- **tvOS**: 13.0+ (was 11.0+)
+- **watchOS**: 7.0+ (was 4.0+)
+- **SQLite**: 3.20.0+ (was 3.19.3+)
+
+### Major Changes
+
+<AccordionGroup>
+  <Accordion title="Column Coding Strategies">
+    In GRDB 6, coding strategies were static properties. In GRDB 7, they are methods that accept a column argument:
+
+    ```swift
+    // GRDB 6
+    struct Player {
+        static let databaseDataDecodingStrategy = ...
+        static let databaseDateDecodingStrategy = ...
+    }
+
+    // GRDB 7
+    struct Player {
+        static func databaseDataDecodingStrategy(for column: String) -> DatabaseDataDecodingStrategy { ... }
+        static func databaseDateDecodingStrategy(for column: String) -> DatabaseDateDecodingStrategy { ... }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Cancellable Async Database Accesses">
+    In GRDB 6, async database accesses completed even if the wrapper Task was cancelled.
+
+    In GRDB 7, async accesses respect Task cancellation. If a Task is cancelled:
+    - Reads and writes throw `CancellationError`
+    - Pending transactions are rolled back
+    - The database is not modified
+
+    To ignore cancellation:
+
+    ```swift
+    let task = Task {
+        try await writer.write { ... }
+    }
+    try await task.value
+    ```
+  </Accordion>
+
+  <Accordion title="ValueObservation and Main Actor">
+    By default, `ValueObservation` now fosters the main actor:
+
+    ```swift
+    @MainActor func startObservation() {
+        let observation = ValueObservation.tracking { ... }
+        
+        let cancellable = observation.start(in: dbQueue) { error in
+            // MainActor-isolated
+        } onChange: { value in
+            // MainActor-isolated
+            print("Fresh value", value)
+        }
+    }
+    ```
+
+    Opt-out with a specific scheduler:
+
+    ```swift
+    observation.start(in: dbQueue, scheduling: .async(onQueue: .main))
+    ```
+  </Accordion>
+
+  <Accordion title="Record Base Class Discouraged">
+    Subclassing the `Record` class is **discouraged** in GRDB 7. Refactor to Swift structs:
+
+    ```swift
+    // GRDB 6
+    class Player: Record {
+        var id: UUID
+        var name: String
+        var score: Int
+    }
+
+    // GRDB 7
+    struct Player: Codable {
+        var id: UUID
+        var name: String
+        var score: Int
+    }
+
+    extension Player: FetchableRecord, PersistableRecord { }
+    ```
+  </Accordion>
+
+  <Accordion title="Access to SQLite C Functions">
+    Additional imports may be needed:
+
+    ```swift
+    // SPM package
+    import SQLite3
+    let version = sqlite3_libversion_number()
+
+    // SQLCipher
+    import SQLCipher
+    let version = sqlite3_libversion_number()
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## All Migration Guides
+
+<CardGroup cols={2}>
+  <Card title="GRDB 7 Migration Guide" icon="7" href="https://github.com/groue/GRDB.swift/blob/master/Documentation/GRDB7MigrationGuide.md">
+    Swift 6 support, new requirements, and breaking changes
+  </Card>
+  <Card title="GRDB 6 Migration Guide" icon="6" href="https://github.com/groue/GRDB.swift/blob/master/Documentation/GRDB6MigrationGuide.md">
+    UPSERT support, RETURNING clause, and persistence callbacks
+  </Card>
+  <Card title="GRDB 5 Migration Guide" icon="5" href="https://github.com/groue/GRDB.swift/blob/master/Documentation/GRDB5MigrationGuide.md">
+    Major refactoring and Swift 5.2+ requirement
+  </Card>
+  <Card title="Changelog" icon="clock-rotate-left" href="https://github.com/groue/GRDB.swift/blob/master/CHANGELOG.md">
+    Complete version history with all changes
+  </Card>
+</CardGroup>
+
+## Migration Best Practices
+
+<Steps>
+  <Step title="Update to Latest Minor Version">
+    Before upgrading to a new major version, update to the latest minor version of your current major version and fix all deprecation warnings.
+  </Step>
+  
+  <Step title="Review the Migration Guide">
+    Read the complete migration guide for your target version. Pay special attention to breaking changes that affect your codebase.
+  </Step>
+  
+  <Step title="Update Dependencies">
+    Update companion libraries like GRDBQuery and GRDBSnapshotTesting to compatible versions.
+  </Step>
+  
+  <Step title="Test Thoroughly">
+    Run your test suite and verify all database operations work as expected after the migration.
+  </Step>
+</Steps>
+
+## Companion Library Versions
+
+When upgrading GRDB, ensure your companion libraries are compatible:
+
+- **GRDBQuery**: Check [releases](https://github.com/groue/GRDBQuery/releases) for SwiftUI integration
+- **GRDBSnapshotTesting**: Check [releases](https://github.com/groue/GRDBSnapshotTesting/releases) for snapshot testing
+
+<Tip>
+  Each migration guide includes a "Preparing the Migration" section with steps to minimize disruption during the upgrade.
+</Tip>

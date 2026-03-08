@@ -1,0 +1,254 @@
+---
+title: Records Overview
+description: Introduction to GRDB's record protocols for fetching and persisting database rows
+---
+
+GRDB provides a set of protocols that allow Swift types to interact with database rows. These protocols form the foundation of GRDB's record layer, enabling you to fetch data from the database and persist changes back to it.
+
+## The Record Protocols
+
+GRDB defines three main record protocols:
+
+<CardGroup cols={3}>
+  <Card title="FetchableRecord" icon="download" href="/records/fetchable-record">
+    Decode database rows into Swift types
+  </Card>
+  <Card title="PersistableRecord" icon="upload" href="/records/persistable-record">
+    Encode Swift types into database rows
+  </Card>
+  <Card title="Codable Records" icon="code" href="/records/codable-records">
+    Leverage Swift's Codable for automatic conformance
+  </Card>
+</CardGroup>
+
+## Protocol Hierarchy
+
+The record protocols build on each other:
+
+```
+TableRecord
+    ├── FetchableRecord (read from database)
+    └── EncodableRecord
+            ├── PersistableRecord (write to database, immutable)
+            └── MutablePersistableRecord (write to database, mutable)
+```
+
+### FetchableRecord
+
+Types that conform to `FetchableRecord` can be decoded from database rows:
+
+```swift
+struct Player: FetchableRecord {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    init(row: Row) throws {
+        id = row["id"]
+        name = row["name"]
+        score = row["score"]
+    }
+}
+
+// Fetch players from the database
+let players = try Player.fetchAll(db, sql: "SELECT * FROM player")
+```
+
+### PersistableRecord & MutablePersistableRecord
+
+Types that conform to `PersistableRecord` or `MutablePersistableRecord` can be saved to the database:
+
+```swift
+struct Player: MutablePersistableRecord {
+    var id: Int64?
+    var name: String
+    var score: Int
+    
+    func encode(to container: inout PersistenceContainer) {
+        container["id"] = id
+        container["name"] = name
+        container["score"] = score
+    }
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+
+// Insert a new player
+var player = Player(id: nil, name: "Arthur", score: 100)
+try player.insert(db)
+print(player.id) // The auto-incremented id
+```
+
+## Choosing Between Protocols
+
+<AccordionGroup>
+  <Accordion title="When to use FetchableRecord only">
+    Use `FetchableRecord` alone when you only need to read data from the database:
+    
+    - Read-only views or computed data
+    - Data from complex queries or joins
+    - Immutable reference data
+    
+    ```swift
+    struct PlayerStats: FetchableRecord {
+        var name: String
+        var totalScore: Int
+        var gamesPlayed: Int
+        
+        init(row: Row) throws {
+            name = row["name"]
+            totalScore = row["totalScore"]
+            gamesPlayed = row["gamesPlayed"]
+        }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="When to use MutablePersistableRecord">
+    Use `MutablePersistableRecord` for struct-based records with auto-incremented primary keys:
+    
+    - Records are value types (structs)
+    - Need to capture auto-incremented IDs after insertion
+    - Prefer Swift's value semantics
+    
+    ```swift
+    struct Player: MutablePersistableRecord {
+        var id: Int64?
+        var name: String
+        
+        mutating func didInsert(_ inserted: InsertionSuccess) {
+            id = inserted.rowID
+        }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="When to use PersistableRecord">
+    Use `PersistableRecord` for class-based records or immutable structs:
+    
+    - Records are reference types (classes)
+    - No need to mutate on insertion
+    - Primary keys are set before insertion
+    
+    ```swift
+    class Player: PersistableRecord {
+        var id: Int64?
+        var name: String
+        
+        func didInsert(_ inserted: InsertionSuccess) {
+            id = inserted.rowID
+        }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="When to combine with TableRecord">
+    Add `TableRecord` conformance to enable query interface methods:
+    
+    ```swift
+    struct Player: FetchableRecord, MutablePersistableRecord, TableRecord {
+        static let databaseTableName = "player"
+        // ...
+    }
+    
+    // Now you can use query interface methods
+    let player = try Player.filter(Column("id") == 42).fetchOne(db)
+    let highScorers = try Player.filter(Column("score") > 1000).fetchAll(db)
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Codable Integration
+
+The simplest way to adopt record protocols is through Swift's `Codable`:
+
+```swift
+struct Player: Codable {
+    var id: Int64?
+    var name: String
+    var score: Int
+}
+
+// Automatic conformance when you add the protocols
+extension Player: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+```
+
+When your type conforms to `Codable`, GRDB automatically provides implementations for `init(row:)` and `encode(to:)`. See [Codable Records](/records/codable-records) for more details.
+
+## Persistence Methods
+
+Records that conform to `MutablePersistableRecord` or `PersistableRecord` get persistence methods:
+
+<ParamField path="insert(_:)" type="method">
+  Inserts a new record into the database
+  
+  ```swift
+  var player = Player(id: nil, name: "Arthur", score: 100)
+  try player.insert(db)
+  ```
+</ParamField>
+
+<ParamField path="update(_:)" type="method">
+  Updates an existing record based on its primary key
+  
+  ```swift
+  player.score = 200
+  try player.update(db)
+  ```
+</ParamField>
+
+<ParamField path="save(_:)" type="method">
+  Inserts or updates depending on whether the record exists
+  
+  ```swift
+  try player.save(db) // Inserts if new, updates if exists
+  ```
+</ParamField>
+
+<ParamField path="delete(_:)" type="method">
+  Deletes the record from the database
+  
+  ```swift
+  try player.delete(db)
+  ```
+</ParamField>
+
+## Best Practices
+
+<Tip>
+  **Use Codable when possible**: If your Swift type's properties map directly to database columns, use `Codable` for automatic conformance. This reduces boilerplate and keeps your code maintainable.
+</Tip>
+
+<Tip>
+  **Prefer structs with MutablePersistableRecord**: Swift structs with value semantics work well with `MutablePersistableRecord`. Use the `didInsert(_:)` callback to capture auto-incremented IDs.
+</Tip>
+
+<Note>
+  **The Record class is legacy**: GRDB historically provided a `Record` base class, but this approach is no longer recommended. Prefer protocol conformance with structs instead.
+</Note>
+
+<Warning>
+  **Thread safety**: Record instances are not thread-safe. Don't share record instances across threads. Always perform database operations within `read` or `write` closures.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="FetchableRecord" icon="download" href="/records/fetchable-record">
+    Learn how to fetch records from the database
+  </Card>
+  <Card title="PersistableRecord" icon="upload" href="/records/persistable-record">
+    Learn how to persist records to the database
+  </Card>
+  <Card title="Codable Records" icon="code" href="/records/codable-records">
+    Use Codable for automatic protocol conformance
+  </Card>
+</CardGroup>

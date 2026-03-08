@@ -1,0 +1,349 @@
+---
+title: "DatabaseValue"
+description: "A value stored in a database table"
+---
+
+`DatabaseValue` represents a value as stored in SQLite, preserving its exact storage type.
+
+## Overview
+
+`DatabaseValue` wraps SQLite's five storage classes:
+
+```swift
+let nullValue = DatabaseValue.null
+let intValue = 42.databaseValue
+let doubleValue = 3.14.databaseValue
+let stringValue = "Arthur".databaseValue  
+let blobValue = Data([1, 2, 3]).databaseValue
+```
+
+<Note>
+Most of the time you'll work with Swift types directly. Use `DatabaseValue` when you need to preserve exact SQLite storage information.
+</Note>
+
+## Storage Classes
+
+### Storage Enum
+
+The `Storage` enum represents SQLite's five storage classes:
+
+```swift
+public enum Storage {
+    case null
+    case int64(Int64)
+    case double(Double)
+    case string(String)
+    case blob(Data)
+}
+```
+
+### Accessing Storage
+
+<ResponseField name="storage" type="DatabaseValue.Storage">
+  The exact SQLite storage class and value
+</ResponseField>
+
+```swift
+let value = 42.databaseValue
+switch value.storage {
+case .null:
+    print("NULL")
+case .int64(let int):
+    print("Integer: \(int)")
+case .double(let double):
+    print("Real: \(double)")
+case .string(let string):
+    print("Text: \(string)")
+case .blob(let data):
+    print("Blob: \(data)")
+}
+```
+
+## Creating DatabaseValues
+
+### null
+
+The NULL value:
+
+```swift
+let value = DatabaseValue.null
+```
+
+### From DatabaseValueConvertible
+
+Any type conforming to `DatabaseValueConvertible` can create a `DatabaseValue`:
+
+```swift
+let intValue = 42.databaseValue
+let stringValue = "Arthur".databaseValue
+let dateValue = Date().databaseValue
+let boolValue = true.databaseValue
+```
+
+### init(value:)
+
+Creates a `DatabaseValue` from any value:
+
+```swift
+let value = DatabaseValue(value: 42)
+let value = DatabaseValue(value: "text")
+let value = DatabaseValue(value: Data())
+```
+
+### init(sqliteStatement:index:)
+
+Creates a value from a raw SQLite statement:
+
+```swift
+let value = DatabaseValue(sqliteStatement: statement, index: 0)
+```
+
+## Checking for NULL
+
+### isNull
+
+<ResponseField name="isNull" type="Bool">
+  Whether the value is NULL
+</ResponseField>
+
+```swift
+let value = DatabaseValue.null
+print(value.isNull) // true
+
+let value = 42.databaseValue
+print(value.isNull) // false
+```
+
+## Equality
+
+`DatabaseValue` equality follows SQLite rules:
+
+```swift
+// Same types
+1.databaseValue == 1.databaseValue // true
+"text".databaseValue == "text".databaseValue // true
+
+// Integer and Double are equal if they represent the same number
+1.databaseValue == 1.0.databaseValue // true
+1.databaseValue == 1.5.databaseValue // false
+
+// NULL is never equal to anything, including itself
+DatabaseValue.null == DatabaseValue.null // false
+```
+
+### Storage Equality
+
+For exact storage comparison, compare `storage` properties:
+
+```swift
+1.databaseValue.storage == 1.0.databaseValue.storage // false (int64 != double)
+```
+
+## Fetching DatabaseValues
+
+### From Queries
+
+```swift
+try dbQueue.read { db in
+    let value = try DatabaseValue.fetchOne(db, sql: """
+        SELECT name FROM player WHERE id = 1
+        """)
+    
+    if let value, !value.isNull {
+        print("Name: \(value)")
+    }
+}
+```
+
+### From Rows
+
+```swift
+let row = try Row.fetchOne(db, sql: "SELECT * FROM player")!
+let nameValue: DatabaseValue = row["name"]
+```
+
+## Converting from DatabaseValue
+
+Convert `DatabaseValue` to Swift types:
+
+```swift
+let value = 42.databaseValue
+
+if let int = Int.fromDatabaseValue(value) {
+    print("Int: \(int)")
+}
+
+if let string = String.fromDatabaseValue(value) {
+    print("String: \(string)")
+}
+```
+
+## Common Patterns
+
+### Handling Unknown Types
+
+```swift
+func handleValue(_ value: DatabaseValue) {
+    switch value.storage {
+    case .null:
+        print("NULL")
+    case .int64(let int):
+        print("Integer: \(int)")
+    case .double(let double):
+        print("Real: \(double)")
+    case .string(let string):
+        print("Text: \(string)")
+    case .blob(let data):
+        print("Blob (\(data.count) bytes)")
+    }
+}
+```
+
+### Extracting Values Safely
+
+```swift
+let value: DatabaseValue = row["score"]
+
+if let score = Int.fromDatabaseValue(value) {
+    print("Score: \(score)")
+} else if value.isNull {
+    print("No score")
+} else {
+    print("Unexpected type: \(value.storage)")
+}
+```
+
+### Working with Optional Values
+
+```swift
+let value: DatabaseValue? = row["deletedAt"]
+
+if let value {
+    if value.isNull {
+        print("Not deleted (NULL)")
+    } else if let date = Date.fromDatabaseValue(value) {
+        print("Deleted at: \(date)")
+    }
+} else {
+    print("Column doesn't exist")
+}
+```
+
+## Type Information
+
+### Storage Class
+
+Get the storage class name:
+
+```swift
+func storageClassName(_ value: DatabaseValue) -> String {
+    switch value.storage {
+    case .null: return "NULL"
+    case .int64: return "INTEGER"
+    case .double: return "REAL"
+    case .string: return "TEXT"
+    case .blob: return "BLOB"
+    }
+}
+```
+
+## Description
+
+`DatabaseValue` provides custom string descriptions:
+
+```swift
+print(DatabaseValue.null) // NULL
+print(42.databaseValue) // 42
+print(3.14.databaseValue) // 3.14
+print("text".databaseValue) // "text"
+print(Data([1, 2]).databaseValue) // Data([0x01, 0x02])
+```
+
+## Advanced Usage
+
+### Custom Types
+
+Create `DatabaseValue` for custom types by conforming to `DatabaseValueConvertible`:
+
+```swift
+enum Status: String, DatabaseValueConvertible {
+    case active, inactive
+    
+    var databaseValue: DatabaseValue {
+        rawValue.databaseValue
+    }
+    
+    static func fromDatabaseValue(_ dbValue: DatabaseValue) -> Status? {
+        guard let string = String.fromDatabaseValue(dbValue) else {
+            return nil
+        }
+        return Status(rawValue: string)
+    }
+}
+
+let value = Status.active.databaseValue
+```
+
+### Binding to Statements
+
+`DatabaseValue` can be bound to prepared statements:
+
+```swift
+let statement = try db.makeStatement(sql: """
+    INSERT INTO player (name, score) VALUES (?, ?)
+    """)
+
+let values: [DatabaseValue] = [
+    "Arthur".databaseValue,
+    100.databaseValue
+]
+
+try statement.execute(arguments: StatementArguments(values))
+```
+
+## Hashable Conformance
+
+`DatabaseValue` is hashable and can be used in Sets and Dictionary keys:
+
+```swift
+let values: Set<DatabaseValue> = [
+    1.databaseValue,
+    "text".databaseValue,
+    DatabaseValue.null
+]
+
+let dict: [DatabaseValue: String] = [
+    1.databaseValue: "one",
+    "key".databaseValue: "value"
+]
+```
+
+<Note>
+The hash follows SQLite equality rules: `1.databaseValue` and `1.0.databaseValue` have the same hash.
+</Note>
+
+## Performance
+
+<Tip>
+For simple type conversions, using Swift types directly is more efficient than going through `DatabaseValue`:
+
+```swift
+// Better
+let name: String = row["name"]
+
+// Less efficient
+let nameValue: DatabaseValue = row["name"]
+let name = String.fromDatabaseValue(nameValue)
+```
+</Tip>
+
+## Related Topics
+
+- [DatabaseValueConvertible](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databasevalueconvertible) - Converting to/from database values
+- [`Row`](/api/row) - Database rows
+- [StatementColumnConvertible](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/statementcolumnconvertible) - Fast column decoding
+
+## See Also
+
+- [SQLite Datatypes](https://www.sqlite.org/datatype3.html)
+- [Values Documentation](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/values)

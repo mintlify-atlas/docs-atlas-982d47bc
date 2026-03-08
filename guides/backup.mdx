@@ -1,0 +1,300 @@
+---
+title: Database Backup
+description: Copy and backup SQLite databases
+---
+
+You can backup (copy) a database into another database. This is useful for creating backups, copying in-memory databases to files, or implementing document-based applications.
+
+## Basic Backup
+
+The `backup` method copies the entire contents of one database to another:
+
+```swift
+let source: DatabaseQueue = try DatabaseQueue(path: "/path/to/source.db")
+let destination: DatabaseQueue = try DatabaseQueue(path: "/path/to/backup.db")
+
+try source.backup(to: destination)
+```
+
+You can also backup between `DatabasePool` instances:
+
+```swift
+let source: DatabasePool = try DatabasePool(path: "/path/to/source.db")
+let destination: DatabasePool = try DatabasePool(path: "/path/to/backup.db")
+
+try source.backup(to: destination)
+```
+
+<Note>
+The `backup` method blocks the current thread until the destination database contains the same contents as the source database.
+</Note>
+
+## Backup Behavior
+
+When the source is a `DatabasePool`, concurrent writes can happen during the backup:
+- Those writes may or may not be reflected in the backup
+- They won't trigger any errors
+- The backup represents a consistent state of the database
+
+## Database-Level Backup
+
+For more control, use the `Database.backup` method:
+
+```swift
+let source: DatabaseQueue = ...
+let destination: DatabaseQueue = ...
+
+try source.write { sourceDb in
+    try destination.barrierWriteWithoutTransaction { destDb in
+        try sourceDb.backup(to: destDb)
+    }
+}
+```
+
+This allows you to choose specific source and destination `Database` handles for the backup operation.
+
+## Common Use Cases
+
+### Backing Up to a File
+
+Create a backup of your app's database:
+
+```swift
+let appDB = try DatabaseQueue(path: "/path/to/app.db")
+let backupDB = try DatabaseQueue(path: "/path/to/backup.db")
+
+try appDB.backup(to: backupDB)
+print("Backup completed")
+```
+
+### Copying In-Memory to File
+
+Persist an in-memory database to disk:
+
+```swift
+let memoryDB = try DatabaseQueue()
+let fileDB = try DatabaseQueue(path: "/path/to/saved.db")
+
+// Work with in-memory database
+try memoryDB.write { db in
+    try db.execute(sql: "CREATE TABLE player (name TEXT)")
+    try db.execute(sql: "INSERT INTO player VALUES ('Arthur')")
+}
+
+// Save to file
+try memoryDB.backup(to: fileDB)
+```
+
+### Loading File into Memory
+
+Load a database file into memory for fast access:
+
+```swift
+let fileDB = try DatabaseQueue(path: "/path/to/database.db")
+let memoryDB = try DatabaseQueue()
+
+// Load into memory
+try fileDB.backup(to: memoryDB)
+
+// Work with in-memory copy
+try memoryDB.read { db in
+    let players = try Player.fetchAll(db)
+}
+```
+
+### Document-Based Applications
+
+Implement NSDocument subclasses with database backing:
+
+```swift
+class DatabaseDocument: NSDocument {
+    private var database: DatabaseQueue?
+    
+    override func read(from url: URL, ofType typeName: String) throws {
+        let fileDB = try DatabaseQueue(path: url.path)
+        let memoryDB = try DatabaseQueue()
+        try fileDB.backup(to: memoryDB)
+        self.database = memoryDB
+    }
+    
+    override func write(to url: URL, ofType typeName: String) throws {
+        guard let memoryDB = database else { return }
+        let fileDB = try DatabaseQueue(path: url.path)
+        try memoryDB.backup(to: fileDB)
+    }
+}
+```
+
+## Progress Reporting
+
+Track backup progress with the `pagesPerStep` and `progress` parameters.
+
+### Basic Progress Tracking
+
+```swift
+try source.backup(
+    to: destination,
+    pagesPerStep: 50
+) { backupProgress in
+    print("Remaining pages: \(backupProgress.pageCount - backupProgress.pageIndex)")
+    print("Total pages: \(backupProgress.pageCount)")
+    print("Progress: \(backupProgress.pageIndex)/\(backupProgress.pageCount)")
+    print("Complete: \(backupProgress.isComplete)")
+}
+```
+
+### How It Works
+
+When `pagesPerStep` is provided:
+- The backup is performed in steps
+- Each step copies at most `pagesPerStep` database pages
+- The `progress` callback is called after each step
+- The callback is also called after the final step
+
+The `backupProgress` parameter provides:
+- `pageIndex` - Number of pages copied so far
+- `pageCount` - Total number of pages to copy
+- `isComplete` - Whether the backup is finished
+
+### Progress UI Example
+
+```swift
+func backupDatabase(from source: DatabaseQueue, 
+                   to destination: DatabaseQueue,
+                   progressHandler: @escaping (Double) -> Void) throws {
+    try source.backup(
+        to: destination,
+        pagesPerStep: 100
+    ) { progress in
+        let percentage = Double(progress.pageIndex) / Double(progress.pageCount)
+        DispatchQueue.main.async {
+            progressHandler(percentage)
+        }
+    }
+}
+
+// Usage
+try backupDatabase(from: appDB, to: backupDB) { percentage in
+    progressBar.progress = Float(percentage)
+    progressLabel.text = "\(Int(percentage * 100))%"
+}
+```
+
+## Aborting a Backup
+
+You can abort an incomplete backup by throwing an error from the progress callback:
+
+```swift
+struct BackupCancelled: Error { }
+
+var shouldCancel = false
+
+do {
+    try source.backup(
+        to: destination,
+        pagesPerStep: 100
+    ) { progress in
+        if shouldCancel && !progress.isComplete {
+            throw BackupCancelled()
+        }
+    }
+} catch is BackupCancelled {
+    print("Backup was cancelled")
+}
+```
+
+<Warning>
+If the progress callback throws when `backupProgress.isComplete == true`, the error is silently ignored because the backup has already completed.
+</Warning>
+
+## Advanced Options
+
+### Custom Page Size
+
+Choose an appropriate `pagesPerStep` based on your needs:
+
+```swift
+// Fast backup with less frequent progress updates
+try source.backup(to: destination, pagesPerStep: 1000) { progress in
+    // Called every 1000 pages
+}
+
+// Slower backup with more frequent progress updates  
+try source.backup(to: destination, pagesPerStep: 10) { progress in
+    // Called every 10 pages
+}
+```
+
+<Tip>
+Larger `pagesPerStep` values mean faster backups but less frequent progress updates. Smaller values provide smoother progress updates but may slow down the backup.
+</Tip>
+
+### Backup with Retries
+
+```swift
+func backupWithRetry(from source: DatabaseQueue,
+                    to destination: DatabaseQueue,
+                    maxAttempts: Int = 3) throws {
+    var lastError: Error?
+    
+    for attempt in 1...maxAttempts {
+        do {
+            try source.backup(to: destination)
+            return
+        } catch {
+            lastError = error
+            print("Backup attempt \(attempt) failed: \(error)")
+            if attempt < maxAttempts {
+                Thread.sleep(forTimeInterval: 1.0)
+            }
+        }
+    }
+    
+    throw lastError!
+}
+```
+
+## Best Practices
+
+1. **Use appropriate backup timing** - Don't backup too frequently
+2. **Handle errors** - Backup operations can fail
+3. **Consider disk space** - Ensure enough space for the backup
+4. **Test restore procedures** - Verify backups can be restored
+5. **Backup before migrations** - Create backups before schema changes
+6. **Use progress reporting for large databases** - Keep users informed
+7. **Clean up old backups** - Don't accumulate unlimited backups
+
+## Backup Encrypted Databases
+
+When working with [encrypted databases](/guides/encryption), both source and destination must use the correct passphrases:
+
+```swift
+// Backup encrypted database
+var sourceConfig = Configuration()
+sourceConfig.prepareDatabase { db in
+    try db.usePassphrase("source-secret")
+}
+let source = try DatabaseQueue(path: "/path/to/encrypted.db", 
+                               configuration: sourceConfig)
+
+var destConfig = Configuration()
+destConfig.prepareDatabase { db in
+    try db.usePassphrase("dest-secret")
+}
+let destination = try DatabaseQueue(path: "/path/to/backup.db",
+                                    configuration: destConfig)
+
+try source.backup(to: destination)
+```
+
+## Important Notes
+
+<Warning>
+Passing non-default values of `pagesPerStep` or `progress` is an advanced API intended for expert users. GRDB's backup API is a low-level wrapper around SQLite's [online backup API](https://www.sqlite.org/c3ref/backup_finish.html). This documentation is not a substitute for the official SQLite documentation.
+</Warning>
+
+## See Also
+
+- [Encryption](/guides/encryption) - Backing up encrypted databases
+- [Database Connections](/database-connections/opening) - Creating database connections
+- [Concurrency](/advanced/concurrency) - Thread-safe database access

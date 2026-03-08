@@ -1,0 +1,616 @@
+---
+title: Codable Records
+description: Leverage Swift's Codable protocol for automatic record conformance in GRDB
+---
+
+GRDB provides automatic conformance to `FetchableRecord` and `PersistableRecord` for types that adopt Swift's `Codable` protocol. This eliminates boilerplate code and makes working with database records seamless.
+
+## Basic Usage
+
+Define a `Codable` type and add the record protocols:
+
+```swift
+struct Player: Codable {
+    var id: Int64?
+    var name: String
+    var score: Int
+}
+
+// Add record protocol conformance
+extension Player: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+
+// That's it! No need to implement init(row:) or encode(to:)
+try dbQueue.write { db in
+    var player = Player(id: nil, name: "Arthur", score: 100)
+    try player.insert(db)
+    
+    let players = try Player.fetchAll(db)
+}
+```
+
+<Tip>
+  When your type conforms to `Codable`, GRDB automatically implements `init(row:)` and `encode(to:)` for you. Property names map directly to column names.
+</Tip>
+
+## How It Works
+
+When you conform to both `Codable` and `FetchableRecord`:
+- GRDB uses the `Decodable` conformance to implement `init(row:)`
+- Your `CodingKeys` map to database column names
+
+When you conform to both `Codable` and `PersistableRecord`:
+- GRDB uses the `Encodable` conformance to implement `encode(to:)`
+- Your `CodingKeys` map to database column names
+
+```swift
+struct Player: Codable {
+    var id: Int64?
+    var name: String
+    var score: Int
+    
+    // CodingKeys define the mapping
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case score
+    }
+}
+```
+
+## Custom Column Mapping
+
+Use custom `CodingKeys` to map properties to different column names:
+
+```swift
+struct Player: Codable {
+    var id: Int64?
+    var name: String
+    var score: Int
+    var teamId: Int64
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case score
+        case teamId = "team_id"  // Maps to team_id column
+    }
+}
+
+extension Player: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+```
+
+## Snake Case Conversion
+
+Automatically convert between snake_case columns and camelCase properties:
+
+```swift
+struct Player: Codable {
+    var playerId: Int64?     // Maps to player_id
+    var firstName: String    // Maps to first_name
+    var lastName: String     // Maps to last_name
+    var teamId: Int64        // Maps to team_id
+}
+
+extension Player: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    // Enable snake_case conversion
+    static let databaseColumnDecodingStrategy = DatabaseColumnDecodingStrategy.convertFromSnakeCase
+    static let databaseColumnEncodingStrategy = DatabaseColumnEncodingStrategy.convertToSnakeCase
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        playerId = inserted.rowID
+    }
+}
+```
+
+## Date Handling
+
+Customize how dates are encoded and decoded:
+
+```swift
+struct Event: Codable {
+    var id: Int64?
+    var name: String
+    var timestamp: Date
+    var createdAt: Date
+}
+
+extension Event: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "event"
+    
+    // Decode dates as Unix timestamps
+    static func databaseDateDecodingStrategy(for column: String) -> DatabaseDateDecodingStrategy {
+        switch column {
+        case "timestamp":
+            return .timeIntervalSince1970
+        case "createdAt":
+            return .deferredToDate  // Default format
+        default:
+            return .deferredToDate
+        }
+    }
+    
+    // Encode dates as Unix timestamps
+    static func databaseDateEncodingStrategy(for column: String) -> DatabaseDateEncodingStrategy {
+        switch column {
+        case "timestamp":
+            return .timeIntervalSince1970
+        default:
+            return .deferredToDate
+        }
+    }
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+```
+
+<ParamField path="DatabaseDateDecodingStrategy" type="enum">
+  Available date decoding strategies:
+  - `.deferredToDate` - Standard Date decoding (default)
+  - `.timeIntervalSince1970` - Unix timestamp in seconds
+  - `.timeIntervalSinceReferenceDate` - Seconds since 2001-01-01
+  - `.millisecondsSince1970` - Unix timestamp in milliseconds
+  - `.iso8601` - ISO 8601 formatted string
+  - `.formatted(DateFormatter)` - Custom date formatter
+  - `.custom((DatabaseValue) -> Date?)` - Custom decoding closure
+</ParamField>
+
+<ParamField path="DatabaseDateEncodingStrategy" type="enum">
+  Available date encoding strategies:
+  - `.deferredToDate` - Standard Date encoding (default)
+  - `.timeIntervalSince1970` - Unix timestamp in seconds
+  - `.timeIntervalSinceReferenceDate` - Seconds since 2001-01-01
+  - `.millisecondsSince1970` - Unix timestamp in milliseconds
+  - `.iso8601` - ISO 8601 formatted string
+  - `.formatted(DateFormatter)` - Custom date formatter
+  - `.custom((Date, inout PersistenceContainer) throws -> Void)` - Custom encoding closure
+</ParamField>
+
+## Data and Binary Handling
+
+Customize how `Data` values are encoded and decoded:
+
+```swift
+struct Document: Codable {
+    var id: Int64?
+    var title: String
+    var content: Data
+}
+
+extension Document: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "document"
+    
+    // Decode Data from base64
+    static func databaseDataDecodingStrategy(for column: String) -> DatabaseDataDecodingStrategy {
+        .custom { dbValue in
+            guard let base64String = String.fromDatabaseValue(dbValue) else {
+                return nil
+            }
+            return Data(base64Encoded: base64String)
+        }
+    }
+    
+    // Encode Data as base64
+    static func databaseDataEncodingStrategy(for column: String) -> DatabaseDataEncodingStrategy {
+        .custom { data, container in
+            container[column] = data.base64EncodedString()
+        }
+    }
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+```
+
+## JSON Columns
+
+Store complex types as JSON:
+
+```swift
+struct Settings: Codable {
+    var theme: String
+    var language: String
+    var notifications: Bool
+}
+
+struct User: Codable {
+    var id: Int64?
+    var username: String
+    var settings: Settings  // Stored as JSON
+}
+
+extension User: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "user"
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+
+// Create table with JSON column
+try db.execute(sql: """
+    CREATE TABLE user (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        settings TEXT NOT NULL  -- JSON stored as TEXT
+    )
+    """)
+
+var user = User(
+    id: nil,
+    username: "arthur",
+    settings: Settings(theme: "dark", language: "en", notifications: true)
+)
+try user.insert(db)
+
+let fetched = try User.fetchOne(db, id: user.id)
+print(fetched?.settings.theme)  // "dark"
+```
+
+<Tip>
+  GRDB automatically encodes and decodes nested `Codable` types as JSON. Just make sure your database column is of type `TEXT`.
+</Tip>
+
+## Optional Properties
+
+Optional properties work seamlessly:
+
+```swift
+struct Player: Codable {
+    var id: Int64?
+    var name: String
+    var nickname: String?      // Optional column
+    var score: Int
+    var metadata: [String: String]?  // Optional JSON
+}
+
+extension Player: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+
+var player = Player(
+    id: nil,
+    name: "Arthur",
+    nickname: nil,  // NULL in database
+    score: 100,
+    metadata: nil
+)
+try player.insert(db)
+```
+
+## Enums with Codable
+
+Use enums for type-safe column values:
+
+```swift
+enum PlayerStatus: String, Codable {
+    case active
+    case inactive
+    case suspended
+}
+
+struct Player: Codable {
+    var id: Int64?
+    var name: String
+    var status: PlayerStatus
+}
+
+extension Player: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+
+var player = Player(id: nil, name: "Arthur", status: .active)
+try player.insert(db)
+
+let activePlayers = try Player
+    .filter(Column("status") == PlayerStatus.active.rawValue)
+    .fetchAll(db)
+```
+
+## Arrays and Collections
+
+Store arrays as JSON:
+
+```swift
+struct Team: Codable {
+    var id: Int64?
+    var name: String
+    var tags: [String]         // Stored as JSON array
+    var scores: [Int]          // Stored as JSON array
+}
+
+extension Team: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "team"
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+
+var team = Team(
+    id: nil,
+    name: "Warriors",
+    tags: ["sports", "basketball", "professional"],
+    scores: [95, 102, 88, 110]
+)
+try team.insert(db)
+
+let fetched = try Team.fetchOne(db, id: team.id)
+print(fetched?.tags)  // ["sports", "basketball", "professional"]
+```
+
+## Custom Encoding/Decoding Logic
+
+You can still provide custom `Codable` implementations:
+
+```swift
+struct Player: Codable {
+    var id: Int64?
+    var name: String
+    var score: Int
+    
+    // Custom initializer with validation
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(Int64.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        
+        let scoreValue = try container.decode(Int.self, forKey: .score)
+        guard scoreValue >= 0 else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: [CodingKeys.score],
+                    debugDescription: "Score must be non-negative"
+                )
+            )
+        }
+        score = scoreValue
+    }
+    
+    // Custom encoder
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(id, forKey: .id)
+        try container.encode(name.trimmingCharacters(in: .whitespaces), forKey: .name)
+        try container.encode(score, forKey: .score)
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, score
+    }
+}
+
+extension Player: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+```
+
+## Partial Records
+
+Use different types for insertion and fetching:
+
+```swift
+// Minimal type for insertion
+struct NewPlayer: Encodable {
+    var name: String
+    var email: String
+}
+
+extension NewPlayer: MutablePersistableRecord {
+    static let databaseTableName = "player"
+}
+
+// Complete type for fetching
+struct Player: Decodable {
+    var id: Int64
+    var name: String
+    var email: String
+    var createdAt: Date      // Generated by database
+    var score: Int           // Has default value
+}
+
+extension Player: FetchableRecord {
+    static let databaseTableName = "player"
+}
+
+// Insert minimal data
+var newPlayer = NewPlayer(name: "Arthur", email: "arthur@example.com")
+try newPlayer.insert(db)
+
+// Fetch complete data
+let player = try Player.fetchAll(db)
+```
+
+## UserInfo for Custom Context
+
+Pass custom context to your `Codable` implementation:
+
+```swift
+let myContextKey = CodingUserInfoKey(rawValue: "myContext")!
+
+struct Player: Codable {
+    var id: Int64?
+    var name: String
+    
+    init(from decoder: Decoder) throws {
+        // Access custom context
+        if let context = decoder.userInfo[myContextKey] as? String {
+            print("Decoding context: \(context)")
+        }
+        
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(Int64.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+    }
+    
+    enum CodingKeys: CodingKey {
+        case id, name
+    }
+}
+
+extension Player: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    // Provide user info for decoding
+    static var databaseDecodingUserInfo: [CodingUserInfoKey: Any] {
+        [myContextKey: "database"]
+    }
+    
+    // Provide user info for encoding
+    static var databaseEncodingUserInfo: [CodingUserInfoKey: Any] {
+        [myContextKey: "database"]
+    }
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+```
+
+## Full Example
+
+Here's a complete example with all the features:
+
+```swift
+import GRDB
+import Foundation
+
+// Define a Codable record type
+struct Player: Codable {
+    var id: Int64?
+    var name: String
+    var email: String
+    var score: Int
+    var metadata: PlayerMetadata?
+    var createdAt: Date?
+    
+    struct PlayerMetadata: Codable {
+        var level: Int
+        var achievements: [String]
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case email
+        case score
+        case metadata
+        case createdAt = "created_at"
+    }
+}
+
+// Add record protocol conformance
+extension Player: FetchableRecord, MutablePersistableRecord {
+    static let databaseTableName = "player"
+    
+    mutating func willInsert(_ db: Database) throws {
+        createdAt = Date()
+    }
+    
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+}
+
+// Usage
+let dbQueue = try DatabaseQueue(path: "/path/to/database.sqlite")
+
+try dbQueue.write { db in
+    // Create table
+    try db.execute(sql: """
+        CREATE TABLE player (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            score INTEGER NOT NULL DEFAULT 0,
+            metadata TEXT,
+            created_at DATETIME
+        )
+        """)
+    
+    // Insert a player
+    var player = Player(
+        id: nil,
+        name: "Arthur",
+        email: "arthur@example.com",
+        score: 100,
+        metadata: Player.PlayerMetadata(
+            level: 5,
+            achievements: ["first_win", "high_score"]
+        ),
+        createdAt: nil
+    )
+    try player.insert(db)
+    print("Inserted player with id: \(player.id!)")
+    
+    // Update
+    player.score = 150
+    try player.update(db)
+    
+    // Fetch
+    let players = try Player.fetchAll(db)
+    for p in players {
+        print("\(p.name): \(p.score)")
+        if let metadata = p.metadata {
+            print("  Level \(metadata.level)")
+            print("  Achievements: \(metadata.achievements.joined(separator: ", "))")
+        }
+    }
+}
+```
+
+## Best Practices
+
+<Tip>
+  **Always use Codable when possible**: If your properties map naturally to database columns, use `Codable` to eliminate boilerplate. GRDB's automatic implementations handle the common cases perfectly.
+</Tip>
+
+<Tip>
+  **Use CodingKeys for column mapping**: When column names don't match property names, use custom `CodingKeys` rather than implementing `init(row:)` and `encode(to:)` manually.
+</Tip>
+
+<Tip>
+  **Leverage snake_case conversion**: If your database uses snake_case columns but your Swift code uses camelCase, enable automatic conversion with `databaseColumnDecodingStrategy` and `databaseColumnEncodingStrategy`.
+</Tip>
+
+<Warning>
+  **JSON columns must be TEXT**: When using nested `Codable` types, make sure the database column is defined as `TEXT`. GRDB stores JSON as text by default.
+</Warning>
+
+<Note>
+  **Codable works with both structs and classes**: While structs are recommended for value semantics, you can use `Codable` with classes too. Just use `PersistableRecord` instead of `MutablePersistableRecord`.
+</Note>
+
+## Related Topics
+
+- [FetchableRecord](/records/fetchable-record) - Manual row decoding
+- [PersistableRecord](/records/persistable-record) - Manual row encoding
+- [Records Overview](/records/overview) - Introduction to record protocols

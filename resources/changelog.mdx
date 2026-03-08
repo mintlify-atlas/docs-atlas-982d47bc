@@ -1,0 +1,197 @@
+---
+title: Changelog
+description: Recent changes and version history for GRDB
+icon: clock-rotate-left
+---
+
+GRDB adheres to [Semantic Versioning](https://semver.org/), with one exception: APIs flagged as **🔥 EXPERIMENTAL** may break between minor releases.
+
+<Note>
+  For the complete version history, see the [full CHANGELOG on GitHub](https://github.com/groue/GRDB.swift/blob/master/CHANGELOG.md).
+</Note>
+
+## Latest Release: GRDB 7.10.0
+
+**Released**: February 15, 2025
+
+<CardGroup cols={2}>
+  <Card title="Latest Version" icon="tag">
+    **7.10.0**
+  </Card>
+  <Card title="Release Date" icon="calendar">
+    **February 15, 2025**
+  </Card>
+</CardGroup>
+
+### What's New
+
+- **Documentation fixes** by [@bellebethcooper](https://github.com/bellebethcooper), [@Cykelero](https://github.com/Cykelero), and [@leejungyeob](https://github.com/leejungyeob)
+- **Linux adjustments** for improved compatibility
+- **SQLCipher adjustments** for better encryption support
+- **Android and Windows adjustments** for cross-platform compatibility
+- **UPSERT configuration**: Choose whether UPSERT updates all columns or no columns
+
+## GRDB 7.x Releases
+
+### 7.9.0 (December 13, 2025)
+
+<AccordionGroup>
+  <Accordion title="Breaking Changes">
+    - Simplified compiler checks for SQLite snapshots (Linux/Android compatibility)
+    - **New requirements**: Swift 6.1+, Xcode 16.3+
+    - SQLCipher compiler flag changed to `SQLITE_HAS_CODEC`
+  </Accordion>
+  
+  <Accordion title="Fixes">
+    - Fixed cancellation of async tasks using FTS5 full-text engine
+    - Improved robustness for database access cancellation and interruption
+  </Accordion>
+</AccordionGroup>
+
+### 7.8.0 (October 2, 2025)
+
+- **New**: Merged Migrations feature
+
+### 7.7.1 (September 29, 2025)
+
+- **Fixed**: The `save()` method now works correctly for record types with attached triggers
+
+### 7.7.0 (September 23, 2025)
+
+- **New**: Persistable Database Views
+- **New**: Xcode 26 support
+- **Fixed**: Race condition regarding Task cancellation
+
+### 7.6.0 (July 20, 2025)
+
+- **New**: All closures accepting `DatabaseComponents` can now throw
+- **New**: `Sendable` conformance for `DatabasePreUpdateEvent.Kind`
+- **New**: Access task locals from asynchronous database accesses
+- **New**: Throwing row accessors
+
+## GRDB 7.0.0 - Swift 6 Support
+
+**Released**: January 26, 2025
+
+GRDB 7 brings **full support for Swift 6** and includes major improvements.
+
+<CardGroup cols={2}>
+  <Card title="Migration Guide" icon="book" href="/resources/migration-guides">
+    Complete guide for upgrading from GRDB 6
+  </Card>
+  <Card title="Swift Concurrency Guide" icon="bolt" href="https://swiftpackageindex.com/groue/GRDB.swift/documentation/grdb/swiftconcurrency">
+    Best practices for Swift Concurrency and GRDB
+  </Card>
+</CardGroup>
+
+### Highlights
+
+- ⭐ Support for JSONB expressions
+- ⭐ Fixed inflections for Bias, Focus, Gas, and Lens
+- ⭐ Primary associated types for protocols and cursors
+- ⭐ Better handling of unexpected database values (errors instead of crashes)
+- ⭐ All persistence methods accept explicit conflict policies
+
+### Breaking Changes
+
+- **Requirements**: Swift 6.1+, Xcode 16.3+, iOS 13.0+, macOS 10.15+
+- **Removed**: Deprecated methods from GRDB 6
+- **Changed**: Column coding strategies are now methods with column parameters
+- **Changed**: Async database accesses honor Task cancellation
+- **Changed**: `ValueObservation` defaults to main actor scheduling
+
+## GRDB 6.x Highlights
+
+### 6.29.0 (July 20, 2024)
+
+- Support for single-value encoding/decoding
+- Improved UUID handling
+- Added `deleteAndFetchIds` method
+
+### 6.27.0 (April 21, 2024)
+
+- Fixed Decodable support bug
+- New guidance on default configuration values
+- Documentation on ValueObservation scheduling
+
+### 6.26.0 (March 23, 2024)
+
+- **Sendable** conformances and unavailabilities
+- **Database schema dump** functionality
+- Support for CAST SQLite function
+- Fixed ValueObservation schema modification handling
+
+### 6.24.2 (January 21, 2024)
+
+- **Important**: New recommendation for shared databases - use IMMEDIATE transactions
+
+```swift
+var config = Configuration()
+config.defaultTransactionKind = .immediate
+```
+
+### 6.0.0 (September 9, 2022)
+
+- ⭐ **UPSERT** support: `player.upsert(db)`
+- ⭐ **RETURNING clause**: `player.insertAndFetch(db)`
+- ⭐ **Persistence callbacks**: `didInsert`, `willSave`, etc.
+- Better error handling for unexpected database values
+
+## GRDB 5.x Highlights
+
+### 5.26.0 (July 9, 2022)
+
+- Avoided double notification of initial ValueObservation values on DatabasePool
+- Optional memory management
+
+### 5.0.0 (November 18, 2020)
+
+- ⭐ ValueObservation improvements
+- ⭐ Combine support
+- Swift 5.2+ required
+
+## Version Overview
+
+<CardGroup cols={2}>
+  <Card title="GRDB 7" icon="7">
+    **Current** - Swift 6, Sendable, Main Actor support
+  </Card>
+  <Card title="GRDB 6" icon="6">
+    UPSERT, RETURNING, Persistence Callbacks
+  </Card>
+  <Card title="GRDB 5" icon="5">
+    ValueObservation, Combine support
+  </Card>
+  <Card title="Earlier Versions" icon="ellipsis">
+    See the [full changelog](https://github.com/groue/GRDB.swift/blob/master/CHANGELOG.md)
+  </Card>
+</CardGroup>
+
+## Release Cadence
+
+GRDB follows a regular release schedule:
+
+- **Major versions** (e.g., 7.0): Breaking changes, significant new features
+- **Minor versions** (e.g., 7.10): New features, backwards compatible
+- **Patch versions** (e.g., 7.10.1): Bug fixes only
+
+<Tip>
+  Follow [@groue on Mastodon](https://hachyderm.io/@groue) for release announcements and usage tips.
+</Tip>
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="Full Changelog" icon="github" href="https://github.com/groue/GRDB.swift/blob/master/CHANGELOG.md">
+    Complete version history with all changes
+  </Card>
+  <Card title="Migration Guides" icon="arrow-right-arrow-left" href="/resources/migration-guides">
+    Guides for upgrading between major versions
+  </Card>
+  <Card title="Releases" icon="tag" href="https://github.com/groue/GRDB.swift/releases">
+    Download specific versions from GitHub
+  </Card>
+  <Card title="What's New" icon="sparkles" href="https://github.com/groue/GRDB.swift/discussions">
+    Discuss new features and changes
+  </Card>
+</CardGroup>

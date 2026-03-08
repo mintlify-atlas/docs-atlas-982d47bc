@@ -1,0 +1,424 @@
+---
+title: Full-Text Search
+description: Implement fast text search with FTS3, FTS4, and FTS5 virtual tables
+---
+
+**Full-Text Search is an efficient way to search a corpus of textual documents.** GRDB supports all three SQLite full-text engines: FTS3, FTS4, and FTS5.
+
+## Quick Start
+
+```swift
+// Create full-text table
+try db.create(virtualTable: "book", using: FTS5()) {
+    t.column("author")
+    t.column("title")
+    t.column("body")
+}
+
+// Insert data
+try Book(author: "Herman Melville", title: "Moby-Dick", body: "...").insert(db)
+
+// Build search pattern
+let pattern = FTS5Pattern(matchingPhrase: "Moby-Dick")
+
+// Search with query interface
+let books = try Book.matching(pattern).fetchAll(db)
+```
+
+## Choosing a Full-Text Engine
+
+Each engine has different capabilities and trade-offs:
+
+| Feature | FTS3 | FTS4 | FTS5 |
+|---------|------|------|------|
+| **Word searches** | ✓ | ✓ | ✓ |
+| **Prefix searches** ("data*") | ✓ | ✓ | ✓ |
+| **Phrase searches** | ✓ | ✓ | ✓ |
+| **Boolean searches** (OR, AND) | ✓ | ✓ | ✓ |
+| **Proximity searches** | ✓ | ✓ | ✓ |
+| **Ranking by relevance** | ¹ | ¹ | ✓ |
+| **Unicode case insensitivity** | ✓ | ✓ | ✓ |
+| **Diacritics insensitivity** | ✓ | ✓ | ✓ |
+| **English stemming** | ✓ | ✓ | ✓ |
+| **Custom tokenizers** | ¹ | ¹ | ✓ |
+| **External content tables** | - | ✓ | ✓ |
+
+¹ Requires extra setup
+
+<Info>
+Generally, **FTS5 is the best choice** for new applications. Use FTS4 if you need content compression or are targeting older systems.
+</Info>
+
+## Creating FTS5 Tables
+
+<Steps>
+  <Step title="Create virtual table">
+    Use `create(virtualTable:using:)` with FTS5:
+
+    ```swift
+    try db.create(virtualTable: "document", using: FTS5()) { t in
+        t.column("content")
+    }
+    ```
+  </Step>
+
+  <Step title="Configure tokenizer">
+    Choose a tokenizer for your search needs:
+
+    ```swift
+    try db.create(virtualTable: "book", using: FTS5()) { t in
+        t.tokenizer = .porter()  // English stemming
+        t.column("author")
+        t.column("title")
+        t.column("body")
+    }
+    ```
+  </Step>
+
+  <Step title="Add FTS5 options">
+    Optimize with FTS5-specific options:
+
+    ```swift
+    try db.create(virtualTable: "document", using: FTS5()) { t in
+        t.column("content")
+        t.column("uuid").notIndexed()  // Don't index UUIDs
+        t.prefixes = [2, 4]  // Enable prefix search optimization
+        t.columnSize = 0  // Disable column size tracking
+    }
+    ```
+  </Step>
+</Steps>
+
+### FTS5 Tokenizers
+
+Tokenizers define how text is matched:
+
+```swift
+// Unicode tokenizer (default)
+t.tokenizer = .unicode61()
+t.tokenizer = .unicode61(diacritics: .keep)  // Don't strip accents
+
+// ASCII tokenizer
+t.tokenizer = .ascii()
+
+// Porter stemming (wraps another tokenizer)
+t.tokenizer = .porter()  // Wraps unicode61
+t.tokenizer = .porter(.ascii())  // Wraps ascii
+t.tokenizer = .porter(.unicode61(diacritics: .keep))
+```
+
+**Tokenizer comparison:**
+
+| Content | Query | ascii | unicode61 | porter(unicode61) |
+|---------|-------|-------|-----------|-------------------|
+| Foo | FOO | ✓ | ✓ | ✓ |
+| Jérôme | JÉRÔME | - | ✓ | ✓ |
+| Jérôme | Jerome | - | ✓ | ✓ |
+| Database | Databases | - | - | ✓ |
+| Frustration | Frustrated | - | - | ✓ |
+
+<Warning>
+Unicode matching requires proper normalization. Use `precomposedStringWithCanonicalMapping` on user input to ensure consistent results.
+</Warning>
+
+## Creating FTS4 Tables
+
+FTS4 offers more options for advanced use cases:
+
+```swift
+try db.create(virtualTable: "book", using: FTS4()) { t in
+    t.tokenizer = .porter
+    t.column("author")
+    t.column("title")
+    t.column("body")
+}
+```
+
+### FTS4 Options
+
+```swift
+try db.create(virtualTable: "document", using: FTS4()) { t in
+    t.column("content")
+    t.column("uuid").notIndexed()
+    t.compress = "zip"  // Custom compression
+    t.uncompress = "unzip"
+    t.prefixes = [2, 4]
+}
+```
+
+### FTS4 Tokenizers
+
+```swift
+// Simple (default) - ASCII case-insensitive
+t.tokenizer = .simple
+
+// Porter - English stemming
+t.tokenizer = .porter
+
+// Unicode61 - Unicode case-insensitive
+t.tokenizer = .unicode61()
+t.tokenizer = .unicode61(diacritics: .keep)
+```
+
+## Search Patterns
+
+### FTS5 Patterns
+
+Build safe search patterns from user input:
+
+```swift
+let query = "SQLite database"
+
+// Match any word ("SQLite" OR "database")
+let pattern = FTS5Pattern(matchingAnyTokenIn: query)
+
+// Match all words ("SQLite" AND "database")
+let pattern = FTS5Pattern(matchingAllTokensIn: query)
+
+// Match all word prefixes ("SQLite*" AND "database*")
+let pattern = FTS5Pattern(matchingAllPrefixesIn: query)
+
+// Match exact phrase
+let pattern = FTS5Pattern(matchingPhrase: query)
+
+// Match phrase prefix
+let pattern = FTS5Pattern(matchingPrefixPhrase: query)
+```
+
+For advanced patterns, validate raw input:
+
+```swift
+do {
+    let pattern = try db.makeFTS5Pattern(rawPattern: "sqlite AND database", forTable: "book")
+    let books = try Book.matching(pattern).fetchAll(db)
+} catch {
+    // Invalid pattern syntax or unknown column
+}
+```
+
+### FTS3/FTS4 Patterns
+
+```swift
+let query = "SQLite database"
+
+// Safe patterns from user input
+let pattern = FTS3Pattern(matchingAnyTokenIn: query)
+let pattern = FTS3Pattern(matchingAllTokensIn: query)
+let pattern = FTS3Pattern(matchingAllPrefixesIn: query)
+let pattern = FTS3Pattern(matchingPhrase: query)
+
+// Validate raw patterns
+do {
+    let pattern = try FTS3Pattern(rawPattern: "sqlite AND database")
+} catch {
+    // Malformed pattern
+}
+```
+
+## Searching Full-Text Tables
+
+### Query Interface
+
+```swift
+// Search all columns
+let books = try Book.matching(pattern).fetchAll(db)
+
+// Search specific column
+let books = try Book.filter { $0.title.match(pattern) }.fetchAll(db)
+
+// Combine with other filters
+let books = try Book
+    .matching(pattern)
+    .filter(Column("year") > 2000)
+    .order(Column("title"))
+    .fetchAll(db)
+```
+
+### SQL Queries
+
+```swift
+let books = try Book.fetchAll(db,
+    sql: "SELECT * FROM book WHERE book MATCH ?",
+    arguments: [pattern]
+)
+```
+
+## Sorting by Relevance (FTS5)
+
+FTS5 can rank results by relevance:
+
+```swift
+// SQL
+let books = try Book.fetchAll(db,
+    sql: "SELECT * FROM book WHERE book MATCH ? ORDER BY rank",
+    arguments: [pattern]
+)
+
+// Query Interface
+let books = try Book
+    .matching(pattern)
+    .order(Column.rank)
+    .fetchAll(db)
+```
+
+<Info>
+Lower rank values indicate higher relevance. Sort ascending by `rank` to get most relevant results first.
+</Info>
+
+## External Content Tables
+
+Index a regular table without duplicating its data:
+
+```swift
+// Regular table with non-text columns
+try db.create(table: "book") { t in
+    t.autoIncrementedPrimaryKey("id")
+    t.column("author", .text)
+    t.column("title", .text)
+    t.column("body", .text)
+    t.column("pageCount", .integer)
+    t.column("publishedAt", .datetime)
+}
+
+// Full-text index synchronized with the table
+try db.create(virtualTable: "book_ft", using: FTS5()) { t in
+    t.synchronize(withTable: "book")
+    t.column("author")
+    t.column("title")
+    t.column("body")
+}
+```
+
+<Steps>
+  <Step title="Automatic synchronization">
+    The full-text index automatically tracks changes:
+
+    ```swift
+    // Inserts, updates, and deletes are automatically reflected in book_ft
+    try Book(...).insert(db)
+    try book.update(db)
+    try book.delete(db)
+    ```
+  </Step>
+
+  <Step title="Query both tables">
+    Join the tables to access all columns:
+
+    ```swift
+    let sql = """
+        SELECT book.*
+        FROM book
+        JOIN book_ft ON book_ft.rowid = book.rowid
+        WHERE book_ft MATCH ?
+        ORDER BY rank
+        """
+    let books = try Book.fetchAll(db, sql: sql, arguments: [pattern])
+    ```
+  </Step>
+
+  <Step title="Clean up when needed">
+    When dropping the full-text table, remove its triggers:
+
+    ```swift
+    try db.drop(table: "book_ft")
+    try db.dropFTS5SynchronizationTriggers(forTable: "book_ft")
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Querying just the regular table will fail with "unable to use function MATCH". Always join with the full-text table for searches.
+</Warning>
+
+## Tokenization
+
+Tokenize strings for debugging or custom processing:
+
+### FTS5 Tokenization
+
+```swift
+let tokenizer = try db.makeTokenizer(.porter())
+
+// Tokenize a query
+for (token, flags) in try tokenizer.tokenize(query: "SQLite database") {
+    print(token)  // "sqlite", "databas"
+}
+
+// Tokenize a document
+for (token, flags) in try tokenizer.tokenize(document: "SQLite database") {
+    print(token)
+}
+```
+
+### FTS3/FTS4 Tokenization
+
+```swift
+// Default tokenizer
+let tokens = FTS3.tokenize("SQLite database")  // ["sqlite", "database"]
+
+// Specific tokenizer
+let tokens = FTS3.tokenize("Gustave Doré", withTokenizer: .unicode61())
+// ["gustave", "dore"]
+```
+
+## Advanced Features
+
+### Snippets
+
+Extract context around matches:
+
+```swift
+let sql = """
+    SELECT snippet(book_ft, 2, '**', '**', '...', 15) AS snippet
+    FROM book_ft
+    WHERE book_ft MATCH ?
+    """
+let snippets = try String.fetchAll(db, sql: sql, arguments: [pattern])
+// ["...whale **Moby-Dick** is..."]
+```
+
+### Highlight Matches
+
+```swift
+let sql = """
+    SELECT highlight(book_ft, 2, '<mark>', '</mark>') AS highlighted
+    FROM book_ft
+    WHERE book_ft MATCH ?
+    """
+```
+
+### Column Filters
+
+Search specific columns only:
+
+```swift
+// FTS5: column filter in pattern
+let pattern = try db.makeFTS5Pattern(
+    rawPattern: "title: moby-dick",
+    forTable: "book_ft"
+)
+```
+
+## Best Practices
+
+<Note>
+**Choose the right tokenizer** based on your content and search needs:
+- Use `porter` for English text where stemming helps ("running" matches "run")
+- Use `unicode61` for international text with proper case folding
+- Use `ascii` only for pure ASCII content
+</Note>
+
+<Warning>
+**Normalize user input** before indexing or searching:
+```swift
+let normalized = text.precomposedStringWithCanonicalMapping
+```
+This prevents matching failures due to different Unicode representations.
+</Warning>
+
+<Info>
+**Use external content tables** when you need to:
+- Index tables with non-text columns
+- Avoid duplicating large text content
+- Maintain a single source of truth
+</Info>

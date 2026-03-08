@@ -1,0 +1,314 @@
+---
+title: Query Interface Overview
+description: Build type-safe SQL queries with Swift using GRDB's Query Interface
+---
+
+The **Query Interface** is GRDB's Swift API for building SQL queries. It provides a type-safe, composable way to construct SELECT, INSERT, UPDATE, and DELETE statements without writing raw SQL.
+
+## What is the Query Interface?
+
+The Query Interface approximates the SQLite SELECT query grammar through a hierarchy of Swift types and protocols. Instead of concatenating SQL strings, you build queries using Swift methods that compile to optimized SQL.
+
+<CodeGroup>
+```swift Raw SQL
+// Vulnerable to SQL injection, brittle to schema changes
+try db.execute(
+    sql: "SELECT * FROM player WHERE name = ? AND score > ? ORDER BY score DESC",
+    arguments: ["O'Brien", 1000]
+)
+```
+
+```swift Query Interface
+// Type-safe, composable, schema-aware
+let players = try Player
+    .filter { $0.name == "O'Brien" && $0.score > 1000 }
+    .order(\.$score.desc)
+    .fetchAll(db)
+```
+</CodeGroup>
+
+## Key Benefits
+
+<CardGroup cols={2}>
+  <Card title="Type Safety" icon="shield-check">
+    Catch errors at compile time instead of runtime. The compiler validates column names, types, and query structure.
+  </Card>
+  
+  <Card title="Composability" icon="layer-group">
+    Build complex queries from simple parts. Requests can be combined, filtered, and refined step by step.
+  </Card>
+  
+  <Card title="SQL Injection Prevention" icon="lock">
+    Values are automatically escaped and parameterized. No manual quote handling required.
+  </Card>
+  
+  <Card title="Schema Awareness" icon="database">
+    Queries reference your record types and coding keys, staying in sync as your schema evolves.
+  </Card>
+</CardGroup>
+
+## Core Concepts
+
+### TableRecord Protocol
+
+Types that conform to `TableRecord` can use the Query Interface:
+
+```swift
+struct Player: Codable, FetchableRecord, PersistableRecord {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    enum Columns {
+        static let id = Column(CodingKeys.id)
+        static let name = Column(CodingKeys.name)
+        static let score = Column(CodingKeys.score)
+    }
+}
+
+extension Player: TableRecord {
+    static let databaseTableName = "player"
+}
+```
+
+### Building Requests
+
+Requests are built using a fluent API:
+
+```swift
+// Start with all records
+let request = Player.all()
+
+// Add filters
+let filtered = request.filter { $0.score > 1000 }
+
+// Add ordering
+let ordered = filtered.order(\.$name)
+
+// Add limits
+let limited = ordered.limit(10)
+
+// Execute
+let players = try limited.fetchAll(db) // [Player]
+```
+
+<Note>
+Requests are **immutable and reusable**. Each method returns a new request without modifying the original.
+</Note>
+
+### QueryInterfaceRequest Type
+
+All query interface requests have the type `QueryInterfaceRequest<RowDecoder>`:
+
+```swift
+// QueryInterfaceRequest<Player>
+let playerRequest = Player.all()
+
+// QueryInterfaceRequest<String>
+let nameRequest = Player.select(\.$name, as: String.self)
+
+// QueryInterfaceRequest<Row>
+let rowRequest = Player.all().asRequest(of: Row.self)
+```
+
+The generic parameter determines what type is fetched from the database.
+
+## Query Building Methods
+
+### Filtering
+
+Filter records with WHERE clauses:
+
+```swift
+// Single condition
+Player.filter { $0.score > 1000 }
+
+// Multiple conditions (AND)
+Player.filter { $0.score > 1000 && $0.name != nil }
+
+// By primary key
+Player.filter(id: 42)
+Player.filter(ids: [1, 2, 3])
+
+// By column value
+Player.filter(\.$name == "Arthur")
+```
+
+### Ordering
+
+Sort results with ORDER BY clauses:
+
+```swift
+// Single column
+Player.order(\.$score.desc)
+
+// Multiple columns
+Player.order(\.$score.desc, \.$name)
+
+// With collation
+Player.order(\.$name.collating(.localizedCaseInsensitiveCompare))
+```
+
+### Limiting
+
+Limit the number of results:
+
+```swift
+// First 10 records
+Player.limit(10)
+
+// 10 records starting from offset 20
+Player.limit(10, offset: 20)
+```
+
+### Selecting Columns
+
+Choose which columns to retrieve:
+
+```swift
+// All columns (default)
+Player.all()
+
+// Specific columns
+Player.select(\.$name, \.$score)
+
+// Single column as simple type
+Player.select(\.$name, as: String.self)
+
+// Computed columns
+Player.select((\.$score + \.$bonus).forKey("total"))
+```
+
+### Grouping
+
+Group results with GROUP BY clauses:
+
+```swift
+// Group by column
+Player.group(\.$teamId)
+
+// With aggregate functions
+Player
+    .select(\.$teamId, count(Column("*")).forKey("playerCount"))
+    .group(\.$teamId)
+
+// With HAVING clause
+Player
+    .group(\.$teamId)
+    .having(count(Column("*")) > 5)
+```
+
+## Fetching Results
+
+Once you've built a request, execute it to fetch data:
+
+<Tabs>
+  <Tab title="Fetch All">
+    ```swift
+    // Fetch all matching records
+    let players = try Player
+        .filter { $0.score > 1000 }
+        .fetchAll(db) // [Player]
+    ```
+  </Tab>
+  
+  <Tab title="Fetch One">
+    ```swift
+    // Fetch first matching record (or nil)
+    let player = try Player
+        .filter(id: 42)
+        .fetchOne(db) // Player?
+    ```
+  </Tab>
+  
+  <Tab title="Fetch Count">
+    ```swift
+    // Count matching records
+    let count = try Player
+        .filter { $0.score > 1000 }
+        .fetchCount(db) // Int
+    ```
+  </Tab>
+  
+  <Tab title="Fetch Cursor">
+    ```swift
+    // Fetch with cursor (memory efficient)
+    let cursor = try Player.all().fetchCursor(db)
+    while let player = try cursor.next() {
+        print(player.name)
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Complex Example
+
+Here's a real-world query combining multiple features:
+
+```swift
+struct Player: Codable, FetchableRecord, PersistableRecord, TableRecord {
+    var id: Int64
+    var name: String
+    var score: Int
+    var teamId: Int64?
+    
+    // Find top players on a team
+    static func topPlayers(teamId: Int64, limit: Int = 10) -> QueryInterfaceRequest<Player> {
+        Player
+            .filter { $0.teamId == teamId }
+            .filter { $0.score > 0 }
+            .order(\.$score.desc, \.$name)
+            .limit(limit)
+    }
+}
+
+// Usage
+let topPlayers = try dbQueue.read { db in
+    try Player.topPlayers(teamId: 5).fetchAll(db)
+}
+```
+
+<Note>
+Define request methods as static functions on your record types. This keeps queries reusable and testable.
+</Note>
+
+## When to Use Raw SQL
+
+The Query Interface handles most common queries, but sometimes raw SQL is better:
+
+- Complex window functions
+- Database-specific features
+- Performance-critical queries requiring precise SQL
+- Queries involving multiple databases
+
+For these cases, use [SQL Interpolation](/query-interface/sql-interpolation) to safely mix raw SQL with the Query Interface.
+
+## Architecture
+
+The Query Interface is built on a hierarchy of protocols:
+
+- **FetchRequest** - Base protocol for executable requests
+- **DerivableRequest** - Protocol for refinable requests
+- **QueryInterfaceRequest** - Concrete request type
+- **SQLExpression** - Represents SQL expressions
+- **Column** - Represents database columns
+
+<Tip>
+See the [Query Interface Organization](https://github.com/groue/GRDB.swift/blob/master/Documentation/QueryInterfaceOrganization.md) documentation for details on the protocol hierarchy.
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Building Requests" href="/query-interface/requests" icon="code">
+    Learn how to build and execute query requests
+  </Card>
+  
+  <Card title="Associations" href="/query-interface/associations" icon="link">
+    Define relationships between record types
+  </Card>
+  
+  <Card title="SQL Interpolation" href="/query-interface/sql-interpolation" icon="brackets-curly">
+    Mix type-safe SQL with the Query Interface
+  </Card>
+</CardGroup>

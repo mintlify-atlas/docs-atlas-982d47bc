@@ -1,0 +1,344 @@
+---
+title: Database Migrations
+description: Evolve your database schema over time with DatabaseMigrator
+---
+
+**Migrations allow you to evolve your database schema over time.** You can think of migrations as being 'versions' of the database.
+
+## Overview
+
+A database schema starts off in an empty state, and each migration adds or removes tables, columns, or entries. GRDB can update the database schema along this timeline, bringing it from whatever point it is in the history to the latest version.
+
+When a user upgrades your application, only non-applied migrations are run.
+
+## Setting Up DatabaseMigrator
+
+<Steps>
+  <Step title="Create a migrator">
+    Initialize a DatabaseMigrator instance:
+
+    ```swift
+    var migrator = DatabaseMigrator()
+    ```
+  </Step>
+
+  <Step title="Register migrations">
+    Add migrations in chronological order:
+
+    ```swift
+    // 1st migration
+    migrator.registerMigration("Create authors") { db in
+        try db.create(table: "author") { t in
+            t.autoIncrementedPrimaryKey("id")
+            t.column("creationDate", .datetime)
+            t.column("name", .text).notNull()
+        }
+    }
+
+    // 2nd migration
+    migrator.registerMigration("Add books and author.birthYear") { db in
+        try db.create(table: "book") { t in
+            t.autoIncrementedPrimaryKey("id")
+            t.belongsTo("author").notNull()
+            t.column("title", .text).notNull()
+        }
+
+        try db.alter(table: "author") { t in
+            t.add(column: "birthYear", .integer)
+        }
+    }
+    ```
+  </Step>
+
+  <Step title="Apply migrations">
+    Migrate the database to the latest version:
+
+    ```swift
+    let dbQueue = try DatabaseQueue(path: "/path/to/database.sqlite")
+    try migrator.migrate(dbQueue)
+    ```
+  </Step>
+</Steps>
+
+## Migration Examples
+
+### Creating Tables
+
+```swift
+migrator.registerMigration("Create players") { db in
+    try db.create(table: "player") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.column("name", .text).notNull()
+        t.column("score", .integer).notNull().defaults(to: 0)
+        t.column("email", .text).unique()
+    }
+}
+```
+
+### Adding Columns
+
+```swift
+migrator.registerMigration("Add player avatarURL") { db in
+    try db.alter(table: "player") { t in
+        t.add(column: "avatarURL", .text)
+    }
+}
+```
+
+### Creating Indexes
+
+```swift
+migrator.registerMigration("Index player emails") { db in
+    try db.create(index: "player_on_email", on: "player", columns: ["email"])
+}
+```
+
+### Populating Data
+
+```swift
+migrator.registerMigration("Add default categories") { db in
+    try db.execute(sql: """
+        INSERT INTO category (name) VALUES ('Sports'), ('News'), ('Entertainment')
+        """)
+}
+```
+
+## Partial Migrations
+
+Migrate to a specific version (useful for testing):
+
+```swift
+try migrator.migrate(dbQueue, upTo: "v2")
+
+// Migrations can only run forward:
+try migrator.migrate(dbQueue, upTo: "v2")
+try migrator.migrate(dbQueue, upTo: "v1")
+// ^ Fatal error: database is already migrated beyond migration "v1"
+```
+
+## Migration Checks
+
+Verify migration status before proceeding:
+
+```swift
+try dbQueue.read { db in
+    // Check if database lacks expected migrations
+    if try migrator.hasCompletedMigrations(db) == false {
+        // Database too old
+        throw AppError.databaseTooOld
+    }
+    
+    // Check if database contains unknown (future) migrations
+    if try migrator.hasBeenSuperseded(db) {
+        // Database too new
+        throw AppError.databaseTooNew
+    }
+}
+```
+
+## Advanced Schema Changes
+
+### Recreating a Table
+
+When you need to modify a table in a way not directly supported by SQLite:
+
+```swift
+migrator.registerMigration("Add NOT NULL check on author.name") { db in
+    // 1. Create new table with desired schema
+    try db.create(table: "new_author") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.column("creationDate", .datetime)
+        t.column("name", .text).notNull()
+    }
+    
+    // 2. Copy data from old table
+    try db.execute(sql: "INSERT INTO new_author SELECT * FROM author")
+    
+    // 3. Drop old table
+    try db.drop(table: "author")
+    
+    // 4. Rename new table
+    try db.rename(table: "new_author", to: "author")
+}
+```
+
+<Warning>
+When recreating a table, follow the steps exactly in order to avoid corrupting triggers, views, and foreign key constraints.
+</Warning>
+
+### Renaming Foreign Keys
+
+Use immediate foreign key checks when renaming foreign keys:
+
+```swift
+migrator.registerMigration("Rename team to guild", foreignKeyChecks: .immediate) { db in
+    try db.rename(table: "team", to: "guild")
+    
+    try db.alter(table: "player") { t in
+        t.rename(column: "teamId", to: "guildId")
+    }
+}
+```
+
+<Note>
+Migrations with `.immediate` foreign key checks cannot recreate tables. Define separate migrations if you need both.
+</Note>
+
+## Foreign Key Checks
+
+By default, migrations run with deferred foreign key checks. Foreign keys are validated before the migration commits.
+
+### Immediate Checks
+
+For faster migrations that don't recreate tables:
+
+```swift
+migrator.registerMigration("Fast migration", foreignKeyChecks: .immediate) { db in
+    // Schema changes that don't recreate tables
+    try db.create(table: "tag") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.column("name", .text).notNull()
+    }
+}
+```
+
+### Disabling Deferred Checks
+
+For maximum performance on large databases:
+
+```swift
+migrator = migrator.disablingDeferredForeignKeyChecks()
+
+migrator.registerMigration("Unchecked migration") { db in
+    // Your responsibility to maintain foreign key integrity
+    try db.create(table: "comment") { t in
+        t.belongsTo("post").notNull()
+    }
+    
+    // Manually check specific tables
+    try db.checkForeignKeys(in: "comment")
+}
+```
+
+<Warning>
+Disabling foreign key checks makes you responsible for database integrity. Use carefully and always validate critical constraints manually.
+</Warning>
+
+## Development Options
+
+### Auto-Reset on Schema Change
+
+During development, automatically recreate the database when migrations change:
+
+```swift
+var migrator = DatabaseMigrator()
+
+#if DEBUG
+// Speed up development by nuking the database when migrations change
+migrator.eraseDatabaseOnSchemaChange = true
+#endif
+```
+
+<Warning>
+This option can destroy user data! Only use it during development, protected by `#if DEBUG`.
+</Warning>
+
+The database is erased when:
+- A migration is removed or renamed
+- A schema change is detected (any difference in `sqlite_master`)
+
+## Migration Best Practices
+
+### Use String Literals
+
+Migrations should use strings, not application types:
+
+```swift
+// RECOMMENDED
+migrator.registerMigration("Create authors") { db in
+    try db.create(table: "author") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.column("name", .text)
+    }
+}
+
+// NOT RECOMMENDED
+migrator.registerMigration("Create authors") { db in
+    try db.create(table: Author.databaseTableName) { t in
+        t.autoIncrementedPrimaryKey(Author.Columns.id.name)
+        t.column(Author.Columns.name.name, .text)
+    }
+}
+```
+
+<Info>
+Migrations describe past database states, while application code targets the latest state. Keeping them separate ensures migrations never need to change.
+</Info>
+
+### Never Modify Shipped Migrations
+
+Once a migration ships to users, never modify it. Instead, create a new migration:
+
+```swift
+// Already shipped - DO NOT MODIFY
+migrator.registerMigration("v1") { db in
+    try db.create(table: "user") { t in
+        t.column("name", .text)
+    }
+}
+
+// Fix the issue with a new migration
+migrator.registerMigration("v2") { db in
+    try db.alter(table: "user") { t in
+        // Oops, forgot NOT NULL
+        t.add(column: "email", .text).notNull()
+    }
+}
+```
+
+### Transaction Behavior
+
+<Info>
+Each migration runs in a separate transaction. If a migration fails, its transaction is rolled back, subsequent migrations don't run, and the error is thrown by `migrate()`.
+</Info>
+
+## Asynchronous Migration
+
+Migrate databases asynchronously to avoid blocking the main thread:
+
+```swift
+// Completion handler
+migrator.asyncMigrate(dbQueue) { result in
+    switch result {
+    case .success:
+        print("Migrations completed")
+    case .failure(let error):
+        print("Migration failed: \(error)")
+    }
+}
+
+// Swift concurrency
+try await migrator.migrate(dbQueue)
+
+// Combine
+let publisher = migrator.migratePublisher(dbQueue)
+let cancellable = publisher.sink(
+    receiveCompletion: { completion in ... },
+    receiveValue: { print("Migration complete") }
+)
+```
+
+## Querying Migration State
+
+Inspect which migrations have been applied:
+
+```swift
+try dbQueue.read { db in
+    // Get list of applied migration identifiers
+    let applied = try migrator.appliedIdentifiers(db)
+    print("Applied migrations: \(applied)")
+    
+    // Get list of completed migrations
+    let completed = try migrator.completedMigrations(db)
+}
+```

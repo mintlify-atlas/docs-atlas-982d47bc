@@ -1,0 +1,314 @@
+---
+title: "FetchableRecord"
+description: "Protocol for types that can be decoded from database rows"
+---
+
+`FetchableRecord` is a protocol for Swift types that can decode themselves from database rows.
+
+## Overview
+
+Conform to `FetchableRecord` to fetch your custom types from the database:
+
+```swift
+struct Player: FetchableRecord {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    init(row: Row) {
+        id = row["id"]
+        name = row["name"]
+        score = row["score"]
+    }
+}
+
+let players = try Player.fetchAll(db, sql: "SELECT * FROM player")
+```
+
+<Tip>
+Decodable types get automatic FetchableRecord conformance with minimal setup.
+</Tip>
+
+## Conforming to FetchableRecord
+
+### Manual Conformance
+
+Implement the `init(row:)` initializer:
+
+```swift
+struct Player: FetchableRecord {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    init(row: Row) throws {
+        id = row["id"]
+        name = row["name"]
+        score = row["score"]
+    }
+}
+```
+
+### Decodable Conformance
+
+Decodable types automatically conform to FetchableRecord:
+
+```swift
+struct Player: FetchableRecord, Decodable {
+    var id: Int64
+    var name: String
+    var score: Int
+}
+
+// The init(row:) initializer is automatically provided
+```
+
+## Required Methods
+
+### init(row:)
+
+Creates a record from a database row.
+
+<ParamField path="row" type="Row" required>
+  The database row to decode
+</ParamField>
+
+```swift
+init(row: Row) throws {
+    id = row["id"]
+    name = row["name"]
+    score = row["score"]
+}
+```
+
+<Note>
+The row may be reused during iteration. Call `row.copy()` if you need to store it.
+</Note>
+
+## Fetching Records
+
+### From SQL Queries
+
+<ParamField path="db" type="Database" required>
+  A database connection
+</ParamField>
+
+<ParamField path="sql" type="String" required>
+  The SQL query
+</ParamField>
+
+<ParamField path="arguments" type="StatementArguments" default="[]">
+  Query arguments
+</ParamField>
+
+```swift
+// Fetch all records
+let players = try Player.fetchAll(db, sql: """
+    SELECT * FROM player WHERE score > ?
+    """, arguments: [1000])
+
+// Fetch one record
+let player = try Player.fetchOne(db, sql: """
+    SELECT * FROM player WHERE id = ?
+    """, arguments: [1])
+
+// Fetch with a cursor
+let cursor = try Player.fetchCursor(db, sql: "SELECT * FROM player")
+while let player = try cursor.next() {
+    print(player.name)
+}
+```
+
+### From Prepared Statements
+
+```swift
+let statement = try db.makeStatement(sql: """
+    SELECT * FROM player WHERE score > ?
+    """)
+
+let players = try Player.fetchAll(statement, arguments: [1000])
+```
+
+### From Query Interface Requests
+
+When combined with [`TableRecord`](/api/table-record), you can use the query interface:
+
+```swift
+struct Player: FetchableRecord, TableRecord, Decodable {
+    var id: Int64
+    var name: String
+    var score: Int
+}
+
+// Query interface methods
+let players = try Player.filter(Column("score") > 1000).fetchAll(db)
+let player = try Player.fetchOne(db, key: 1)
+let topPlayers = try Player.order(Column("score").desc).limit(10).fetchAll(db)
+```
+
+## Customizing Decodable Decoding
+
+### Column Name Conversion
+
+```swift
+struct Player: FetchableRecord, Decodable {
+    static let databaseColumnDecodingStrategy = DatabaseColumnDecodingStrategy.convertFromSnakeCase
+    
+    var playerID: Int64  // Decoded from player_id column
+    var fullName: String // Decoded from full_name column
+}
+```
+
+### Date Decoding
+
+```swift
+struct Player: FetchableRecord, Decodable {
+    static func databaseDateDecodingStrategy(for column: String) -> DatabaseDateDecodingStrategy {
+        .timeIntervalSince1970
+    }
+    
+    var createdAt: Date // Decoded from epoch timestamp
+}
+```
+
+### Data Decoding
+
+```swift
+struct Player: FetchableRecord, Decodable {
+    static func databaseDataDecodingStrategy(for column: String) -> DatabaseDataDecodingStrategy {
+        .custom { dbValue in
+            guard let data = Data.fromDatabaseValue(dbValue) else {
+                return nil
+            }
+            return Data(base64Encoded: data)
+        }
+    }
+    
+    var avatarData: Data
+}
+```
+
+### JSON Decoding
+
+```swift
+struct Player: FetchableRecord, Decodable {
+    static func databaseJSONDecoder(for column: String) -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+    
+    var metadata: Metadata // Decoded from JSON column
+}
+```
+
+### User Info
+
+```swift
+let decoderNameKey = CodingUserInfoKey(rawValue: "decoderName")!
+
+struct Player: FetchableRecord, Decodable {
+    static var databaseDecodingUserInfo: [CodingUserInfoKey: Any] {
+        [decoderNameKey: "Database"]
+    }
+    
+    init(from decoder: Decoder) throws {
+        print(decoder.userInfo[decoderNameKey]) // "Database"
+        // Decode properties...
+    }
+}
+```
+
+## Fetching Hashable Records
+
+When your record is Hashable, you can fetch into a Set:
+
+```swift
+struct Player: FetchableRecord, Hashable, Decodable {
+    var id: Int64
+    var name: String
+}
+
+let players = try Player.fetchSet(db, sql: "SELECT * FROM player")
+```
+
+## Fetching by Primary Key
+
+When combined with TableRecord:
+
+```swift
+struct Player: FetchableRecord, TableRecord, Decodable {
+    var id: Int64
+    var name: String
+}
+
+// Fetch by primary key
+let player = try Player.fetchOne(db, key: 1)
+let players = try Player.fetchAll(db, keys: [1, 2, 3])
+
+// Find (throws if not found)
+let player = try Player.find(db, key: 1)
+```
+
+## Using with Identifiable
+
+```swift
+struct Player: FetchableRecord, Identifiable, Decodable {
+    var id: Int64
+    var name: String
+}
+
+// Fetch by id
+let player = try Player.fetchOne(db, id: 1)
+let players = try Player.fetchAll(db, ids: [1, 2, 3])
+```
+
+## Performance Tips
+
+<Tip>
+Use cursors for large result sets to avoid loading everything into memory:
+
+```swift
+let cursor = try Player.fetchCursor(db, sql: "SELECT * FROM player")
+while let player = try cursor.next() {
+    // Process one player at a time
+}
+```
+</Tip>
+
+<Tip>
+Cache prepared statements for repeated queries:
+
+```swift
+let statement = try db.cachedStatement(sql: "SELECT * FROM player WHERE id = ?")
+let player1 = try Player.fetchOne(statement, arguments: [1])
+let player2 = try Player.fetchOne(statement, arguments: [2])
+```
+</Tip>
+
+## Error Handling
+
+```swift
+do {
+    let player = try Player.fetchOne(db, key: 999)
+    if let player {
+        print("Found: \(player.name)")
+    } else {
+        print("No player with that key")
+    }
+} catch {
+    print("Database error: \(error)")
+}
+```
+
+## Related Protocols
+
+- [`TableRecord`](/api/table-record) - Query interface support
+- [`PersistableRecord`](/api/persistable-record) - Inserting and updating records
+- [`EncodableRecord`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/encodablerecord) - Encoding records to database
+
+## See Also
+
+- [Records Documentation](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/records)
+- [Query Interface](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/queryinterface)
+- [Row](/api/row) - Database row type

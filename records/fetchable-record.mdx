@@ -1,0 +1,406 @@
+---
+title: FetchableRecord
+description: Decode database rows into Swift types with the FetchableRecord protocol
+---
+
+The `FetchableRecord` protocol allows Swift types to be decoded from database rows. Any type that conforms to `FetchableRecord` can be fetched from the database using GRDB's fetch methods.
+
+## Basic Usage
+
+To conform to `FetchableRecord`, implement the `init(row:)` initializer:
+
+```swift
+struct Player: FetchableRecord {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    init(row: Row) throws {
+        id = row["id"]
+        name = row["name"]
+        score = row["score"]
+    }
+}
+```
+
+## Fetching Records
+
+Once your type conforms to `FetchableRecord`, you can fetch instances from the database:
+
+### Fetching All Records
+
+```swift
+try dbQueue.read { db in
+    // Fetch all players
+    let players = try Player.fetchAll(db, sql: "SELECT * FROM player")
+    
+    // Fetch players with a condition
+    let highScorers = try Player.fetchAll(
+        db,
+        sql: "SELECT * FROM player WHERE score > ?",
+        arguments: [1000]
+    )
+}
+```
+
+### Fetching a Single Record
+
+```swift
+try dbQueue.read { db in
+    // Fetch one player
+    let player = try Player.fetchOne(
+        db,
+        sql: "SELECT * FROM player WHERE id = ?",
+        arguments: [42]
+    )
+    // player is Player?
+}
+```
+
+### Using a Cursor
+
+For large result sets, use a cursor to iterate efficiently:
+
+```swift
+try dbQueue.read { db in
+    let cursor = try Player.fetchCursor(
+        db,
+        sql: "SELECT * FROM player ORDER BY score DESC"
+    )
+    
+    while let player = try cursor.next() {
+        print("\(player.name): \(player.score)")
+    }
+}
+```
+
+<Note>
+  Cursors are memory-efficient because they don't load all rows at once. Use them for large result sets or when you need to process rows one at a time.
+</Note>
+
+### Fetching a Set
+
+If your record type is `Hashable`, you can fetch a `Set`:
+
+```swift
+struct Player: FetchableRecord, Hashable {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    init(row: Row) throws {
+        id = row["id"]
+        name = row["name"]
+        score = row["score"]
+    }
+}
+
+try dbQueue.read { db in
+    let players = try Player.fetchSet(
+        db,
+        sql: "SELECT * FROM player"
+    )
+    // players is Set<Player>
+}
+```
+
+## Fetching from Prepared Statements
+
+You can reuse prepared statements for multiple fetches:
+
+```swift
+try dbQueue.read { db in
+    let statement = try db.makeStatement(
+        sql: "SELECT * FROM player WHERE score > ?"
+    )
+    
+    let goodPlayers = try Player.fetchAll(statement, arguments: [500])
+    let greatPlayers = try Player.fetchAll(statement, arguments: [1000])
+}
+```
+
+## Fetching with TableRecord
+
+When combined with `TableRecord`, you get access to query interface methods:
+
+```swift
+struct Player: FetchableRecord, TableRecord {
+    static let databaseTableName = "player"
+    
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    init(row: Row) throws {
+        id = row["id"]
+        name = row["name"]
+        score = row["score"]
+    }
+}
+
+try dbQueue.read { db in
+    // Use the query interface
+    let allPlayers = try Player.fetchAll(db)
+    
+    let player = try Player
+        .filter(Column("id") == 42)
+        .fetchOne(db)
+    
+    let highScorers = try Player
+        .filter(Column("score") > 1000)
+        .order(Column("score").desc)
+        .fetchAll(db)
+}
+```
+
+## Row Decoding Strategies
+
+`FetchableRecord` provides several strategies for customizing how values are decoded from rows.
+
+### Column Name Strategy
+
+Convert snake_case column names to camelCase property names:
+
+```swift
+struct Player: FetchableRecord, Decodable {
+    static let databaseColumnDecodingStrategy = DatabaseColumnDecodingStrategy.convertFromSnakeCase
+    
+    var playerId: Int64  // Decoded from player_id column
+    var firstName: String  // Decoded from first_name column
+    var lastName: String   // Decoded from last_name column
+}
+```
+
+### Date Decoding Strategy
+
+Customize how dates are decoded:
+
+```swift
+struct Event: FetchableRecord, Decodable {
+    var name: String
+    var timestamp: Date
+    
+    static func databaseDateDecodingStrategy(for column: String) -> DatabaseDateDecodingStrategy {
+        switch column {
+        case "timestamp":
+            return .timeIntervalSince1970
+        default:
+            return .deferredToDate
+        }
+    }
+}
+```
+
+<ParamField path="databaseDateDecodingStrategy" type="DatabaseDateDecodingStrategy">
+  Available strategies:
+  - `.deferredToDate` - Default Date decoding
+  - `.timeIntervalSince1970` - Unix timestamp in seconds
+  - `.timeIntervalSinceReferenceDate` - Seconds since 2001-01-01
+  - `.millisecondsSince1970` - Unix timestamp in milliseconds
+  - `.iso8601` - ISO 8601 date string
+  - `.formatted(DateFormatter)` - Custom date formatter
+  - `.custom((DatabaseValue) -> Date?)` - Custom decoding closure
+</ParamField>
+
+### Data Decoding Strategy
+
+Customize how `Data` values are decoded:
+
+```swift
+struct Document: FetchableRecord, Decodable {
+    var title: String
+    var content: Data
+    
+    static func databaseDataDecodingStrategy(for column: String) -> DatabaseDataDecodingStrategy {
+        .custom { dbValue in
+            guard let base64Data = Data.fromDatabaseValue(dbValue) else {
+                return nil
+            }
+            return Data(base64Encoded: base64Data)
+        }
+    }
+}
+```
+
+### JSON Decoding
+
+Customize JSON decoding for JSON columns:
+
+```swift
+struct Player: FetchableRecord, Decodable {
+    var name: String
+    var metadata: [String: String]
+    
+    static func databaseJSONDecoder(for column: String) -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+}
+```
+
+## Automatic Conformance with Decodable
+
+If your type conforms to `Decodable`, GRDB automatically provides the `init(row:)` implementation:
+
+```swift
+struct Player: Decodable {
+    var id: Int64
+    var name: String
+    var score: Int
+}
+
+// Just add FetchableRecord - no init(row:) needed!
+extension Player: FetchableRecord {}
+
+try dbQueue.read { db in
+    let players = try Player.fetchAll(db, sql: "SELECT * FROM player")
+}
+```
+
+See [Codable Records](/records/codable-records) for more details.
+
+## Fetching from Requests
+
+You can fetch records from any type that conforms to `FetchRequest`:
+
+```swift
+struct Player: FetchableRecord, TableRecord {
+    static let databaseTableName = "player"
+    // ...
+}
+
+try dbQueue.read { db in
+    // Query interface request
+    let request = Player
+        .filter(Column("score") > 1000)
+        .order(Column("name"))
+    
+    let players = try Player.fetchAll(db, request)
+    
+    // SQL request
+    let sqlRequest: SQLRequest<Player> = """
+        SELECT * FROM player WHERE score > \(1000)
+        """
+    let players2 = try Player.fetchAll(db, sqlRequest)
+}
+```
+
+## Fetching by Primary Key
+
+When combined with `TableRecord` and a defined primary key, you can fetch by ID:
+
+```swift
+struct Player: FetchableRecord, TableRecord {
+    static let databaseTableName = "player"
+    
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    init(row: Row) throws {
+        id = row["id"]
+        name = row["name"]
+        score = row["score"]
+    }
+}
+
+try dbQueue.read { db in
+    // Fetch by single ID
+    if let player = try Player.fetchOne(db, id: 42) {
+        print(player.name)
+    }
+    
+    // Fetch multiple IDs
+    let players = try Player.fetchAll(db, ids: [1, 2, 3])
+    
+    // Fetch and require existence
+    let player = try Player.find(db, id: 42) // Throws if not found
+}
+```
+
+## Row Adapters
+
+Use row adapters to transform fetched rows:
+
+```swift
+// Define column scopes
+let adapter = ScopeAdapter([
+    "player": RangeRowAdapter(0..<3),
+    "team": RangeRowAdapter(3..<5)
+])
+
+try dbQueue.read { db in
+    let sql = """
+        SELECT player.*, team.*
+        FROM player
+        JOIN team ON player.teamId = team.id
+        """
+    
+    let rows = try Row.fetchAll(db, sql: sql, adapter: adapter)
+    for row in rows {
+        let player = try Player(row: row.scopes["player"]!)
+        let team = try Team(row: row.scopes["team"]!)
+    }
+}
+```
+
+## Error Handling
+
+The `init(row:)` initializer can throw errors:
+
+```swift
+enum PlayerError: Error {
+    case invalidScore
+}
+
+struct Player: FetchableRecord {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    init(row: Row) throws {
+        id = row["id"]
+        name = row["name"]
+        
+        let scoreValue: Int = row["score"]
+        guard scoreValue >= 0 else {
+            throw PlayerError.invalidScore
+        }
+        score = scoreValue
+    }
+}
+
+// Handle errors when fetching
+do {
+    let players = try Player.fetchAll(db, sql: "SELECT * FROM player")
+} catch PlayerError.invalidScore {
+    print("Found player with invalid score")
+} catch {
+    print("Database error: \(error)")
+}
+```
+
+## Best Practices
+
+<Tip>
+  **Use Decodable for simple cases**: If your type's properties match database columns directly, conform to `Decodable` and let GRDB implement `init(row:)` automatically.
+</Tip>
+
+<Tip>
+  **Use cursors for large result sets**: When fetching thousands of rows, use `fetchCursor(_:)` instead of `fetchAll(_:)` to avoid loading everything into memory at once.
+</Tip>
+
+<Warning>
+  **Don't store Row instances**: The `row` parameter in `init(row:)` may be reused during iteration. If you need to keep the row, make a copy with `row.copy()`.
+</Warning>
+
+<Note>
+  **Cursors are valid only during database access**: Don't return cursors from `read` or `write` closures. They become invalid once the database access completes.
+</Note>
+
+## Related Topics
+
+- [PersistableRecord](/records/persistable-record) - Persist records to the database
+- [Codable Records](/records/codable-records) - Use Swift Codable for automatic conformance
+- [Query Interface](/query-interface/basics) - Build type-safe queries

@@ -1,0 +1,596 @@
+---
+title: SQL Interpolation
+description: Write type-safe SQL queries with string interpolation in GRDB
+---
+
+**SQL Interpolation** lets you safely embed Swift values directly in SQL queries using string interpolation syntax. It prevents SQL injection while keeping your queries readable and maintainable.
+
+## The Problem with Raw SQL
+
+Raw SQL strings are error-prone and vulnerable:
+
+```swift
+// DANGEROUS: SQL injection vulnerability!
+let name = userInput // Could be "'; DROP TABLE player; --"
+try db.execute(sql: "DELETE FROM player WHERE name = '\(name)'")
+
+// TEDIOUS: Manual argument handling
+try db.execute(
+    sql: "UPDATE student SET firstName = ?, lastName = ?, department = ?, birthDate = ?, registrationDate = ?, mainTeacherId = ? WHERE id = ?",
+    arguments: [firstName, lastName, department, birthDate, registrationDate, mainTeacherId, studentId]
+    // ⚠️ Easy to mismatch order!
+)
+```
+
+## The Solution: SQL Interpolation
+
+SQL Interpolation provides the convenience of string interpolation with the safety of parameterized queries:
+
+```swift
+let name = "O'Brien"
+let id = 42
+
+try db.execute(literal: "UPDATE player SET name = \(name) WHERE id = \(id)")
+// Executes: UPDATE player SET name = 'O''Brien' WHERE id = 42
+// Values are properly escaped and parameterized!
+```
+
+<Note>
+Use the `literal` argument label (not `sql`) to enable SQL interpolation.
+</Note>
+
+## Basic Usage
+
+### Execute Statements
+
+```swift
+let name = "Arthur"
+let score = 1000
+
+try dbQueue.write { db in
+    try db.execute(literal: """
+        INSERT INTO player (name, score) 
+        VALUES (\(name), \(score))
+        """)
+}
+```
+
+### Create Requests
+
+```swift
+// SQLRequest with interpolation
+let name = "Arthur"
+let request: SQLRequest<Player> = """
+    SELECT * FROM player 
+    WHERE name = \(name)
+    """
+    
+let players = try request.fetchAll(db)
+```
+
+### Mix with Query Interface
+
+```swift
+// Use SQL literal in filter
+let bonus = 100
+let request = Player.filter(literal: "score + \(bonus) > 1000")
+
+// Embed in query methods
+let date = Date()
+let request = Player.filter(literal: "DATE(createdAt) = \(date)")
+```
+
+## The SQL Type
+
+The `SQL` type represents an SQL query with interpolation support:
+
+```swift
+// Build SQL literal
+let name = "O'Brien"
+let query: SQL = "SELECT * FROM player WHERE name = \(name)"
+
+// Execute it
+try db.execute(literal: query)
+```
+
+### Building SQL Step by Step
+
+```swift
+var query: SQL = "UPDATE player SET "
+
+if let name = newName {
+    query += "name = \(name), "
+}
+
+if let score = newScore {
+    query += "score = \(score), "
+}
+
+query.append(literal: "updatedAt = \(Date()) ")
+query += "WHERE id = \(playerId)"
+
+try db.execute(literal: query)
+```
+
+### Joining SQL Fragments
+
+```swift
+let conditions: [SQL] = [
+    "score > \(minScore)",
+    "name IS NOT NULL",
+    "createdAt > \(startDate)"
+]
+
+let whereClause = conditions.joined(separator: " AND ")
+let query: SQL = "SELECT * FROM player WHERE \(literal: whereClause)"
+```
+
+### Extracting SQL and Arguments
+
+```swift
+let name = "Arthur"
+let query: SQL = "SELECT * FROM player WHERE name = \(name)"
+
+try dbQueue.read { db in
+    let (sql, arguments) = try query.build(db)
+    print(sql)       // "SELECT * FROM player WHERE name = ?"
+    print(arguments) // ["Arthur"]
+}
+```
+
+## Interpolation Types
+
+### Values
+
+Embed any `DatabaseValueConvertible` type:
+
+```swift
+// Basic types
+let name: String = "Arthur"
+let score: Int = 1000
+let rating: Double = 4.5
+let isActive: Bool = true
+let data: Data = ...
+
+let query: SQL = """
+    INSERT INTO player (name, score, rating, isActive, data)
+    VALUES (\(name), \(score), \(rating), \(isActive), \(data))
+    """
+
+// Optional values (NULL when nil)
+let email: String? = nil
+let query: SQL = "UPDATE player SET email = \(email)"
+// Generates: UPDATE player SET email = NULL
+
+// Dates
+let date = Date()
+let query: SQL = "SELECT * FROM player WHERE createdAt < \(date)"
+```
+
+### Collections
+
+Embed arrays and sets for IN clauses:
+
+```swift
+// Array
+let ids = [1, 2, 3]
+let query: SQL = "SELECT * FROM player WHERE id IN \(ids)"
+// SELECT * FROM player WHERE id IN (1, 2, 3)
+
+// Empty array (always false)
+let emptyIds: [Int] = []
+let query: SQL = "SELECT * FROM player WHERE id IN \(emptyIds)"
+// SELECT * FROM player WHERE id IN (NULL) -- Always false
+
+// NOT IN
+let excludedIds = [7, 8, 9]
+let query: SQL = "SELECT * FROM player WHERE id NOT IN \(excludedIds)"
+```
+
+### Table Names
+
+Embed record types for table names:
+
+```swift
+struct Player: TableRecord {
+    static let databaseTableName = "player"
+}
+
+// Table name from type
+let query: SQL = "SELECT * FROM \(Player.self)"
+// SELECT * FROM player
+
+// Table name from instance
+let player: Player = ...
+let query: SQL = "INSERT INTO \(tableOf: player) ..."
+```
+
+### Columns
+
+Embed coding keys and columns:
+
+```swift
+struct Player: Codable, TableRecord {
+    var name: String
+    var score: Int
+}
+
+// Using CodingKeys
+let query: SQL = "SELECT \(CodingKeys.name), \(CodingKeys.score) FROM player"
+// SELECT name, score FROM player
+
+// Using Column
+let nameColumn = Column("name")
+let query: SQL = "SELECT \(nameColumn) FROM player"
+```
+
+### All Columns
+
+Embed all columns selected by a record:
+
+```swift
+struct Player: TableRecord { }
+
+// All columns
+let query: SQL = "SELECT \(columnsOf: Player.self) FROM player"
+// SELECT player.* FROM player
+
+// With table alias
+let query: SQL = """
+    SELECT \(columnsOf: Player.self, tableAlias: "p") 
+    FROM player p
+    """
+// SELECT p.* FROM player p
+```
+
+### Expressions
+
+Embed query interface expressions:
+
+```swift
+// Column expression
+let scoreColumn = Column("score")
+let query: SQL = "SELECT \(scoreColumn) FROM player"
+
+// Computed expression
+let total = Column("score") + Column("bonus")
+let query: SQL = "SELECT \(total) AS total FROM player"
+
+// Conditional expression  
+let isExpert = Column("score") > 1000
+let query: SQL = "SELECT *, \(isExpert) AS isExpert FROM player"
+```
+
+### Subqueries
+
+Embed requests as subqueries:
+
+```swift
+// QueryInterfaceRequest
+let maxScoreRequest = Player.select(max(Column("score")))
+let query: SQL = """
+    SELECT * FROM player 
+    WHERE score = (\(maxScoreRequest))
+    """
+
+// SQLRequest
+let subquery = SQLRequest<Int>("SELECT MAX(score) FROM player")
+let query: SQL = """
+    SELECT * FROM player 
+    WHERE score = (\(subquery))
+    """
+```
+
+### Orderings
+
+Embed ordering terms:
+
+```swift
+// Descending order
+let ordering = Column("score").desc
+let query: SQL = "SELECT * FROM player ORDER BY \(ordering)"
+// SELECT * FROM player ORDER BY score DESC
+
+// Multiple orderings
+let orderings = [Column("score").desc, Column("name")]
+let orderClause = orderings.map(\.sqlOrdering).joined(separator: ", ")
+let query: SQL = "SELECT * FROM player ORDER BY \(literal: orderClause)"
+```
+
+### Raw SQL
+
+Embed plain SQL strings (use sparingly):
+
+```swift
+// Embed raw SQL
+let tableName = "player"
+let query: SQL = "SELECT * FROM \(sql: tableName)"
+
+// With arguments
+let name = "Arthur"
+let query: SQL = """
+    SELECT * FROM player 
+    WHERE \(sql: "name = ?", arguments: [name])
+    """
+```
+
+<Warning>
+Embedding raw SQL bypasses safety checks. Prefer typed interpolations when possible.
+</Warning>
+
+## Type-Safe Custom Functions
+
+Define reusable SQL functions with interpolation:
+
+```swift
+// DATE function
+func date(_ expression: some SQLSpecificExpressible) -> SQLExpression {
+    SQL("DATE(\(expression))").sqlExpression
+}
+
+let request = Player.filter { date($0.createdAt) == "2020-01-23" }
+// SELECT * FROM player WHERE DATE(createdAt) = '2020-01-23'
+
+// IFNULL function
+func ifNull<T>(_ expression: some SQLSpecificExpressible, _ defaultValue: T) 
+    -> SQLExpression where T: SQLExpressible 
+{
+    SQL("IFNULL(\(expression), \(defaultValue))").sqlExpression
+}
+
+let request = Player.select(ifNull(Column("email"), "no-email@example.com"))
+
+// SUBSTRING function
+func substring(
+    _ expression: some SQLSpecificExpressible,
+    from: Int,
+    length: Int
+) -> SQLExpression {
+    SQL("SUBSTR(\(expression), \(from), \(length))").sqlExpression
+}
+
+let request = Player.select(
+    substring(Column("name"), from: 1, length: 3).forKey("initials")
+)
+```
+
+## Record-Aware Queries
+
+Use record type information in interpolated queries:
+
+```swift
+extension Player {
+    // Delete players without scores
+    static func deleteAllWithoutScore(_ db: Database) throws {
+        try db.execute(literal: """
+            DELETE FROM \(self) 
+            WHERE \(CodingKeys.score) IS NULL
+            """)
+    }
+    
+    // Filter by ID
+    static func filter(id: Int64) -> SQLRequest<Player> {
+        """
+        SELECT \(columnsOf: self)
+        FROM \(self)
+        WHERE \(CodingKeys.id) = \(id)
+        """
+    }
+    
+    // Filter by multiple IDs
+    static func filter(ids: [Int64]) -> SQLRequest<Player> {
+        """
+        SELECT \(columnsOf: self)
+        FROM \(self)
+        WHERE \(CodingKeys.id) IN \(ids)
+        """
+    }
+    
+    // Maximum score
+    static func maximumScore() -> SQLRequest<Int> {
+        "SELECT MAX(\(CodingKeys.score)) FROM \(self)"
+    }
+    
+    // Best players
+    static func bestPlayers() -> SQLRequest<Player> {
+        """
+        SELECT \(columnsOf: self)
+        FROM \(self)
+        WHERE \(CodingKeys.score) = (\(maximumScore()))
+        """
+    }
+}
+
+// Usage
+try dbQueue.write { db in
+    try Player.deleteAllWithoutScore(db)
+}
+
+let player = try Player.filter(id: 42).fetchOne(db)
+let players = try Player.filter(ids: [1, 2, 3]).fetchAll(db)
+let maxScore = try Player.maximumScore().fetchOne(db)
+let bestPlayers = try Player.bestPlayers().fetchAll(db)
+```
+
+<Tip>
+Embedding `\(self)` and `\(CodingKeys.column)` keeps queries in sync with schema changes.
+</Tip>
+
+## Preventing SQL Injection
+
+SQL interpolation automatically prevents SQL injection:
+
+<CodeGroup>
+```swift Vulnerable (DON'T DO THIS)
+// DANGEROUS: Direct string interpolation
+let userInput = "'; DROP TABLE player; --"
+let sql = "SELECT * FROM player WHERE name = '\(userInput)'"
+try db.execute(sql: sql)
+// Executes: SELECT * FROM player WHERE name = ''; DROP TABLE player; --'
+// 💥 Your table is gone!
+```
+
+```swift Safe (SQL Interpolation)
+// SAFE: Values are parameterized
+let userInput = "'; DROP TABLE player; --"
+try db.execute(literal: "SELECT * FROM player WHERE name = \(userInput)")
+// Executes: SELECT * FROM player WHERE name = '''; DROP TABLE player; --'
+// ✅ Treated as a literal string value
+```
+</CodeGroup>
+
+How it works:
+1. Values are converted to statement arguments
+2. Arguments are sent separately from the SQL query
+3. SQLite treats arguments as data, never as executable SQL
+
+## Combining with Query Interface
+
+Mix SQL interpolation with query interface methods:
+
+```swift
+// Filter with custom SQL function
+let createdAt = Column("createdAt")
+let creationDay = SQL("DATE(\(createdAt))").sqlExpression
+
+let request = Player
+    .filter(creationDay == "2020-01-23")
+    .order(\.$score.desc)
+
+// Works with associations
+let request = Player
+    .filter(creationDay == "2020-01-23")
+    .including(required: Player.team)
+// SELECT player.*, team.*
+// FROM player
+// JOIN team ON team.id = player.teamId
+// WHERE DATE(player.createdAt) = '2020-01-23'
+//       ~~~~~~~~~~~~~~~~~~~~~~
+//       Automatic table disambiguation!
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use literal: Label" icon="tag">
+    Always use `literal:` argument label to enable interpolation
+  </Card>
+  
+  <Card title="Embed Record Types" icon="table">
+    Use `\(Player.self)` instead of hardcoded table names
+  </Card>
+  
+  <Card title="Embed CodingKeys" icon="key">
+    Use `\(CodingKeys.column)` instead of string column names
+  </Card>
+  
+  <Card title="Define Reusable Functions" icon="function">
+    Create typed helper functions for complex SQL expressions
+  </Card>
+</CardGroup>
+
+### Do
+
+```swift
+// ✅ Type-safe, schema-aware
+let query: SQL = """
+    SELECT \(columnsOf: Player.self)
+    FROM \(Player.self)
+    WHERE \(CodingKeys.score) > \(minScore)
+    """
+
+// ✅ Reusable custom function
+func date(_ expr: some SQLSpecificExpressible) -> SQLExpression {
+    SQL("DATE(\(expr))").sqlExpression
+}
+```
+
+### Don't
+
+```swift
+// ❌ Hardcoded table name
+let query: SQL = "SELECT * FROM player"
+
+// ❌ Hardcoded column name  
+let query: SQL = "SELECT * FROM player WHERE score > \(minScore)"
+
+// ❌ Direct string interpolation (SQL injection!)
+let sql = "SELECT * FROM player WHERE name = '\(name)'"
+try db.execute(sql: sql)
+```
+
+## Complete Example
+
+Here's a real-world example using SQL interpolation:
+
+```swift
+struct Player: Codable, FetchableRecord, PersistableRecord, TableRecord {
+    var id: Int64
+    var name: String
+    var score: Int
+    var teamId: Int64?
+    var createdAt: Date
+    
+    static let databaseTableName = "player"
+}
+
+extension Player {
+    /// Custom search with dynamic filters
+    static func search(
+        name: String? = nil,
+        minScore: Int? = nil,
+        teamId: Int64? = nil,
+        createdAfter: Date? = nil
+    ) -> SQLRequest<Player> {
+        var conditions: [SQL] = []
+        
+        if let name = name {
+            conditions.append("\(CodingKeys.name) LIKE \('%' || \(name) || '%')")
+        }
+        
+        if let minScore = minScore {
+            conditions.append("\(CodingKeys.score) >= \(minScore)")
+        }
+        
+        if let teamId = teamId {
+            conditions.append("\(CodingKeys.teamId) = \(teamId)")
+        }
+        
+        if let date = createdAfter {
+            conditions.append("\(CodingKeys.createdAt) > \(date)")
+        }
+        
+        let whereClause = conditions.isEmpty 
+            ? SQL("1 = 1") 
+            : conditions.joined(separator: " AND ")
+        
+        return """
+            SELECT \(columnsOf: self)
+            FROM \(self)
+            WHERE \(literal: whereClause)
+            ORDER BY \(CodingKeys.score) DESC
+            """
+    }
+}
+
+// Usage
+let players = try dbQueue.read { db in
+    try Player.search(
+        name: "Art",
+        minScore: 1000,
+        createdAfter: Date().addingTimeInterval(-86400)
+    ).fetchAll(db)
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Query Interface Overview" href="/query-interface/overview" icon="book">
+    Learn about type-safe query building
+  </Card>
+  
+  <Card title="Database API" href="/api/database" icon="function">
+    Explore the Database API for custom functions and more
+  </Card>
+</CardGroup>

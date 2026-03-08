@@ -1,0 +1,276 @@
+---
+title: Encryption
+description: Encrypt your database with SQLCipher
+---
+
+GRDB can encrypt your database with [SQLCipher](http://sqlcipher.net) v3.4+.
+
+## Installation
+
+### Swift Package Manager
+
+To use SQLCipher with the Swift Package Manager, you must fork GRDB and modify `Package.swift`. Instructions are in the file itself, in comments that contain "GRDB+SQLCipher".
+
+### CocoaPods
+
+Specify in your `Podfile`:
+
+```ruby
+# GRDB with SQLCipher 4
+pod 'GRDB.swift/SQLCipher'
+pod 'SQLCipher', '~> 4.0'
+
+# GRDB with SQLCipher 3
+pod 'GRDB.swift/SQLCipher'
+pod 'SQLCipher', '~> 3.4'
+```
+
+<Warning>
+Make sure you remove any existing `pod 'GRDB.swift'` from your Podfile. `GRDB.swift/SQLCipher` must be the only active GRDB pod in your whole project, or you will face linker or runtime errors due to conflicts between SQLCipher and the system SQLite.
+</Warning>
+
+## Creating or Opening an Encrypted Database
+
+You create and open an encrypted database by providing a passphrase to your database connection:
+
+```swift
+import GRDB
+
+var config = Configuration()
+config.prepareDatabase { db in
+    try db.usePassphrase("secret")
+}
+let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+```
+
+The database is now encrypted and can only be opened with the correct passphrase.
+
+### Additional SQLCipher Configuration
+
+Use `prepareDatabase` to perform other [SQLCipher configuration steps](https://www.zetetic.net/sqlcipher/sqlcipher-api/) that must happen early in the connection lifetime:
+
+```swift
+var config = Configuration()
+config.prepareDatabase { db in
+    try db.usePassphrase("secret")
+    try db.execute(sql: "PRAGMA cipher_page_size = 4096")
+    try db.execute(sql: "PRAGMA kdf_iter = 256000")
+}
+let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+```
+
+### Opening SQLCipher 3 Databases with SQLCipher 4
+
+When opening an existing SQLCipher 3 database with SQLCipher 4, use the `cipher_compatibility` pragma:
+
+```swift
+var config = Configuration()
+config.prepareDatabase { db in
+    try db.usePassphrase("secret")
+    try db.execute(sql: "PRAGMA cipher_compatibility = 3")
+}
+let dbQueue = try DatabaseQueue(path: dbPath, configuration: config)
+```
+
+See [SQLCipher 4.0.0 Release](https://www.zetetic.net/blog/2018/11/30/sqlcipher-400-release/) and [Upgrading to SQLCipher 4](https://discuss.zetetic.net/t/upgrading-to-sqlcipher-4/3283) for more information.
+
+## Changing the Passphrase
+
+You can change the passphrase of an already encrypted database.
+
+### With DatabaseQueue
+
+Open the database with the old passphrase, then apply the new one:
+
+```swift
+try dbQueue.write { db in
+    try db.changePassphrase("newSecret")
+}
+```
+
+### With DatabasePool
+
+When using a database pool, prevent concurrent reads and invalidate existing connections:
+
+```swift
+try dbPool.barrierWriteWithoutTransaction { db in
+    try db.changePassphrase("newSecret")
+    dbPool.invalidateReadOnlyConnections()
+}
+```
+
+<Note>
+When your application continues using a database after changing the passphrase, ensure `prepareDatabase` loads the current passphrase dynamically:
+
+```swift
+// CORRECT: get the latest passphrase when needed
+var config = Configuration()
+config.prepareDatabase { db in
+    let passphrase = try getCurrentPassphrase()
+    try db.usePassphrase(passphrase)
+}
+
+// WRONG: this captures the old passphrase
+let passphrase = try getCurrentPassphrase()
+config.prepareDatabase { db in
+    try db.usePassphrase(passphrase)
+}
+```
+</Note>
+
+<Warning>
+`DatabasePool.barrierWriteWithoutTransaction` does not prevent database snapshots from accessing the database during or after the passphrase change. Applications should invalidate open snapshots before changing the passphrase.
+</Warning>
+
+## Encrypting an Existing Database
+
+Providing a passphrase won't encrypt a clear-text database that already exists. Instead, you must create a new encrypted database and export the content.
+
+This technique is [documented by SQLCipher](https://discuss.zetetic.net/t/how-to-encrypt-a-plaintext-sqlite-database-to-use-sqlcipher-and-avoid-file-is-encrypted-or-is-not-a-database-errors/868/1).
+
+```swift
+// The existing clear-text database
+let existingDBQueue = try DatabaseQueue(path: "/path/to/existing.db")
+
+// The new encrypted database at a different location
+var config = Configuration()
+config.prepareDatabase { db in
+    try db.usePassphrase("secret")
+}
+let newDBQueue = try DatabaseQueue(path: "/path/to/encrypted.db", configuration: config)
+
+// Export the data
+try existingDBQueue.inDatabase { db in
+    try db.execute(
+        sql: """
+            ATTACH DATABASE ? AS encrypted KEY ?;
+            SELECT sqlcipher_export('encrypted');
+            DETACH DATABASE encrypted;
+            """,
+        arguments: [newDBQueue.path, "secret"])
+}
+
+// Now you can delete the old database and use the encrypted one
+```
+
+This technique can also change the passphrase of an encrypted database by exporting to a new database with a different passphrase.
+
+## Security Considerations
+
+### Managing Passphrase Lifetime in Memory
+
+Avoid keeping the passphrase in memory longer than necessary. Load it from `prepareDatabase`:
+
+```swift
+// RECOMMENDED: load passphrase only when needed
+var config = Configuration()
+config.prepareDatabase { db in
+    let passphrase = try getPassphrase()
+    try db.usePassphrase(passphrase)
+}
+
+// NOT RECOMMENDED: passphrase stays in memory
+let passphrase = try getPassphrase()
+config.prepareDatabase { db in
+    try db.usePassphrase(passphrase)
+}
+```
+
+### Using Data for Better Control
+
+For better control over passphrase lifetime, use `Data` with `resetBytes`:
+
+```swift
+var config = Configuration()
+config.prepareDatabase { db in
+    var passphraseData = try getPassphraseData() // Data
+    defer {
+        passphraseData.resetBytes(in: 0..<passphraseData.count)
+    }
+    try db.usePassphrase(passphraseData)
+}
+```
+
+<Note>
+Keep in mind that the content of a String may remain in memory even after the object is released.
+</Note>
+
+### Direct SQLCipher C API
+
+For precise control over passphrase bytes in memory, use SQLCipher's C functions directly:
+
+```swift
+import SQLCipher
+
+var config = Configuration()
+config.prepareDatabase { db in
+    // Carefully load passphrase bytes
+    let passphraseBytes: UnsafePointer<UInt8> = ...
+    let passphraseLength: Int = ...
+    
+    let code = sqlite3_key(
+        db.sqliteConnection,
+        passphraseBytes,
+        Int32(passphraseLength)
+    )
+    
+    // Carefully dispose passphrase bytes
+    
+    guard code == SQLITE_OK else {
+        throw DatabaseError(
+            resultCode: ResultCode(rawValue: code),
+            message: "Failed to set passphrase"
+        )
+    }
+}
+```
+
+This approach gives you complete control over the passphrase bytes lifecycle.
+
+## Importing SQLCipher
+
+To access SQLCipher C functions, import the module:
+
+```swift
+import SQLCipher
+
+let sqliteVersion = String(cString: sqlite3_libversion())
+print("SQLCipher version: \(sqliteVersion)")
+```
+
+## Database Sharing with Encryption
+
+When sharing encrypted databases between processes (such as with app extensions), you may encounter `0xDEAD10CC` exceptions.
+
+<Tip>
+Use SQLCipher 4+ with the `cipher_plaintext_header_size` pragma:
+
+```swift
+var config = Configuration()
+config.prepareDatabase { db in
+    try db.usePassphrase("secret")
+    try db.execute(sql: "PRAGMA cipher_plaintext_header_size = 32")
+}
+let dbPool = try DatabasePool(path: dbPath, configuration: config)
+```
+
+Applications become responsible for managing the salt themselves: see [SQLCipher instructions](https://www.zetetic.net/sqlcipher/sqlcipher-api/#cipher_plaintext_header_size).
+</Tip>
+
+See [Sharing a Database](/guides/sharing-a-database) for more information on multi-process database access.
+
+## Best Practices
+
+1. **Always use SQLCipher 4+** for new projects
+2. **Load passphrases dynamically** in `prepareDatabase`
+3. **Use strong passphrases** - consider using key derivation from user passwords
+4. **Store passphrases securely** - use Keychain Services
+5. **Handle errors gracefully** - wrong passphrases throw "file is encrypted or is not a database"
+6. **Test passphrase changes** - ensure your app can handle passphrase updates
+7. **Plan for migration** - have a strategy for moving from SQLCipher 3 to 4
+
+## See Also
+
+- [Sharing a Database](/guides/sharing-a-database) - Multi-process database access
+- [Backup](/guides/backup) - Backup encrypted databases
+- [Custom SQLite Builds](/guides/custom-sqlite-builds) - Advanced SQLite customization

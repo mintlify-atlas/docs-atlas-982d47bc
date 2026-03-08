@@ -1,122 +1,154 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "GRDB.swift",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#242b2c",
+    "light": "#040404",
+    "dark": "#242b2c"
   },
-  "favicon": "/favicon.svg",
+  "logo": {
+    "light": "https://media.brand.dev/3b16fb27-22e9-4daa-a368-88b404b0d37e.svg",
+    "dark": "https://media.brand.dev/3b16fb27-22e9-4daa-a368-88b404b0d37e.svg"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/groue/GRDB.swift"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/groue/GRDB.swift"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Getting Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "installation",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "core/database-connections",
+              "core/executing-updates",
+              "core/fetch-queries",
+              "core/transactions"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Records",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "records/overview",
+              "records/fetchable-record",
+              "records/persistable-record",
+              "records/codable-records"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Query Interface",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "query-interface/overview",
+              "query-interface/requests",
+              "query-interface/associations",
+              "query-interface/sql-interpolation"
+            ]
+          },
+          {
+            "group": "Advanced Features",
+            "pages": [
+              "advanced/database-observation",
+              "advanced/migrations",
+              "advanced/full-text-search",
+              "advanced/concurrency",
+              "advanced/combine-support"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/values-and-types",
+              "guides/encryption",
+              "guides/backup",
+              "guides/custom-sqlite-builds",
+              "guides/sharing-a-database"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Database Access",
             "pages": [
-              "api-reference/introduction"
+              "api/database-queue",
+              "api/database-pool",
+              "api/database"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Records",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/fetchable-record",
+              "api/persistable-record",
+              "api/table-record"
+            ]
+          },
+          {
+            "group": "Query Building",
+            "pages": [
+              "api/query-interface",
+              "api/associations",
+              "api/sql-interpolation"
+            ]
+          },
+          {
+            "group": "Observation",
+            "pages": [
+              "api/value-observation",
+              "api/database-region-observation"
+            ]
+          },
+          {
+            "group": "Values",
+            "pages": [
+              "api/database-value",
+              "api/row",
+              "api/column"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Community",
+            "pages": [
+              "resources/demo-apps",
+              "resources/faq",
+              "resources/migration-guides"
+            ]
+          },
+          {
+            "group": "Contributing",
+            "pages": [
+              "resources/why-adopt-grdb",
+              "resources/contributing",
+              "resources/changelog"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

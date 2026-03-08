@@ -1,0 +1,180 @@
+---
+title: Installation
+description: Learn how to install GRDB.swift in your project using Swift Package Manager, CocoaPods, or manual installation
+---
+
+GRDB.swift can be installed using Swift Package Manager, CocoaPods, or manually. The standard installation uses the version of SQLite that ships with your target operating system.
+
+<Note>
+  For encryption support with SQLCipher, see the [Encryption](/encryption) guide. For custom SQLite builds, refer to the [Custom SQLite Builds](https://github.com/groue/GRDB.swift/blob/master/Documentation/CustomSQLiteBuilds.md) documentation.
+</Note>
+
+## Requirements
+
+Before installing GRDB, make sure your project meets these requirements:
+
+- **iOS** 13.0+
+- **macOS** 10.15+
+- **tvOS** 13.0+
+- **watchOS** 7.0+
+- **SQLite** 3.20.0+
+- **Swift** 6.1+ / Xcode 16.3+
+
+## Swift Package Manager
+
+The [Swift Package Manager](https://swift.org/package-manager/) is the recommended way to install GRDB. It automates the distribution of Swift code and integrates seamlessly with Xcode.
+
+<Steps>
+  <Step title="Add Package Dependency">
+    In Xcode, select **File → Add Package Dependencies...**
+    
+    Enter the GRDB repository URL:
+    ```
+    https://github.com/groue/GRDB.swift.git
+    ```
+  </Step>
+
+  <Step title="Choose Library">
+    GRDB offers two libraries:
+    
+    - **GRDB** (recommended) - Standard static library
+    - **GRDB-dynamic** - Dynamic framework
+    
+    <Tip>
+      Choose `GRDB` unless you specifically need to link a shared dynamic framework across multiple targets. See [How to link a Swift Package as dynamic](https://forums.swift.org/t/how-to-link-a-swift-package-as-dynamic/32062) for more information.
+    </Tip>
+  </Step>
+
+  <Step title="Add to Package.swift (Optional)">
+    If you're building a Swift package, add GRDB to your `Package.swift` dependencies:
+    
+    ```swift Package.swift
+    let package = Package(
+        name: "YourPackage",
+        dependencies: [
+            .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.10.0")
+        ],
+        targets: [
+            .target(
+                name: "YourTarget",
+                dependencies: [
+                    .product(name: "GRDB", package: "GRDB.swift")
+                ]
+            )
+        ]
+    )
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  **Linux Support**: Linux support is provided by contributors and is not automatically tested or officially maintained. If you encounter build or runtime issues on Linux, please open a pull request with the necessary fix.
+</Note>
+
+## CocoaPods
+
+[CocoaPods](http://cocoapods.org/) is a dependency manager for Xcode projects. To use GRDB with CocoaPods (version 1.2 or higher), add it to your `Podfile`:
+
+```ruby Podfile
+pod 'GRDB.swift'
+```
+
+Then run:
+
+```bash
+pod install
+```
+
+<Warning>
+  **Important CocoaPods Issue**: Due to a [CocoaPods issue](https://github.com/CocoaPods/CocoaPods/issues/11839), new versions of GRDB cannot be published to CocoaPods. The last version available is **6.24.1**.
+  
+  To install later versions, use one of these workarounds:
+</Warning>
+
+### Option 1: Use the GRDB7 Branch
+
+This is equivalent to `pod 'GRDB.swift', '~> 7.0'` and tracks the latest GRDB 7.x version:
+
+```ruby Podfile
+# Tracks GRDB 7.x releases
+pod 'GRDB.swift', git: 'https://github.com/groue/GRDB.swift.git', branch: 'GRDB7'
+```
+
+### Option 2: Specify a Tagged Version
+
+Pin to a specific version explicitly:
+
+```ruby Podfile
+# Replace with your desired version
+pod 'GRDB.swift', git: 'https://github.com/groue/GRDB.swift.git', tag: 'v7.10.0'
+```
+
+<Tip>
+  GRDB can be installed as either a framework or a static library through CocoaPods.
+</Tip>
+
+## Manual Installation
+
+If you prefer not to use a dependency manager, you can integrate GRDB manually:
+
+<Steps>
+  <Step title="Download GRDB">
+    [Download](https://github.com/groue/GRDB.swift/releases) the latest release or clone the repository:
+    
+    ```bash
+    git clone https://github.com/groue/GRDB.swift.git
+    cd GRDB.swift
+    git checkout v7.10.0  # Use the latest tagged version
+    ```
+  </Step>
+
+  <Step title="Embed the Xcode Project">
+    Drag and drop the `GRDB.xcodeproj` file into your own Xcode project.
+  </Step>
+
+  <Step title="Add Target Dependency">
+    In your application target's settings:
+    
+    1. Go to the **Build Phases** tab
+    2. In the **Target Dependencies** section, add the `GRDB` target
+    
+    <Note>
+      For watchOS, add the dependency to your extension target instead.
+    </Note>
+  </Step>
+
+  <Step title="Embed the Framework">
+    In your application target's settings:
+    
+    1. Go to the **General** tab
+    2. In the **Frameworks, Libraries, and Embedded Content** section, add `GRDB.framework`
+    
+    <Note>
+      For watchOS, add the framework to your extension target instead.
+    </Note>
+  </Step>
+</Steps>
+
+## Carthage
+
+<Warning>
+  Carthage is **not supported**. For context about this decision, see [issue #433](https://github.com/groue/GRDB.swift/issues/433).
+</Warning>
+
+## Verify Installation
+
+After installing GRDB, verify it works by importing it in your Swift code:
+
+```swift
+import GRDB
+
+// Test that GRDB is available
+let dbQueue = try DatabaseQueue()
+print("GRDB installed successfully!")
+```
+
+If the import succeeds without errors, you're ready to start using GRDB!
+
+## Next Steps
+
+Now that GRDB is installed, check out the [Quickstart](/quickstart) guide to create your first database.

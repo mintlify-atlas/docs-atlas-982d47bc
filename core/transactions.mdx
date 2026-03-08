@@ -1,0 +1,560 @@
+---
+title: Transactions
+description: Learn how to use transactions and savepoints for atomic database operations
+---
+
+Transactions ensure that a group of database operations either all succeed together or all fail together, maintaining database consistency and integrity.
+
+## Transaction Basics
+
+GRDB automatically wraps `write` calls in transactions:
+
+```swift
+try dbQueue.write { db in
+    // Implicit transaction
+    try Player(name: "Arthur", score: 100).insert(db)
+    try Player(name: "Barbara", score: 1000).insert(db)
+    // Transaction automatically commits if no error is thrown
+}
+```
+
+## Explicit Transactions
+
+Use `inTransaction` for explicit control:
+
+```swift
+try dbQueue.inTransaction { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    try Player(name: "Barbara", score: 1000).insert(db)
+    return .commit  // or .rollback
+}
+```
+
+### Transaction Completion
+
+The `inTransaction` closure returns a `TransactionCompletion`:
+
+```swift
+enum TransactionCompletion {
+    case commit
+    case rollback
+}
+```
+
+<Tabs>
+  <Tab title="Commit">
+    ```swift
+    try dbQueue.inTransaction { db in
+        try Player(name: "Arthur", score: 100).insert(db)
+        // All changes are saved
+        return .commit
+    }
+    ```
+  </Tab>
+  <Tab title="Rollback">
+    ```swift
+    try dbQueue.inTransaction { db in
+        try Player(name: "Arthur", score: 100).insert(db)
+        // Changes are discarded
+        return .rollback
+    }
+    ```
+  </Tab>
+  <Tab title="Error Rollback">
+    ```swift
+    do {
+        try dbQueue.inTransaction { db in
+            try Player(name: "Arthur", score: 100).insert(db)
+            throw CustomError()
+            // Transaction automatically rolls back
+        }
+    } catch {
+        print("Transaction rolled back due to error")
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Transaction Kinds
+
+SQLite supports three transaction kinds:
+
+```swift
+enum TransactionKind {
+    case deferred      // Default
+    case immediate
+    case exclusive
+}
+```
+
+<CodeGroup>
+```swift Deferred (Default)
+// Locks acquired on first read/write
+try dbQueue.inTransaction(.deferred) { db in
+    try Player.fetchAll(db)
+    return .commit
+}
+```
+
+```swift Immediate
+// Write lock acquired immediately
+try dbQueue.inTransaction(.immediate) { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    return .commit
+}
+```
+
+```swift Exclusive
+// Exclusive lock acquired immediately
+try dbQueue.inTransaction(.exclusive) { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    return .commit
+}
+```
+</CodeGroup>
+
+### When to Use Each Kind
+
+| Kind | Locking | Best For |
+|------|---------|----------|
+| **Deferred** | Lazy | Read-heavy transactions |
+| **Immediate** | On begin | Mixed read/write transactions |
+| **Exclusive** | Full lock | Write-heavy transactions, avoiding deadlocks |
+
+## Savepoints
+
+Savepoints create nested transactions:
+
+```swift
+try dbQueue.write { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    
+    try db.inSavepoint {
+        try Player(name: "Barbara", score: 1000).insert(db)
+        try Player(name: "Charlie", score: 500).insert(db)
+        return .commit
+    }
+    
+    // Arthur is inserted, Barbara and Charlie are inserted
+}
+```
+
+### Rolling Back Savepoints
+
+```swift
+try dbQueue.write { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    
+    try db.inSavepoint {
+        try Player(name: "Barbara", score: 1000).insert(db)
+        try Player(name: "Charlie", score: 500).insert(db)
+        return .rollback  // Rollback this savepoint only
+    }
+    
+    // Arthur is inserted, Barbara and Charlie are NOT inserted
+}
+```
+
+### Nested Savepoints
+
+```swift
+try dbQueue.write { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    
+    try db.inSavepoint {
+        try Player(name: "Barbara", score: 1000).insert(db)
+        
+        try db.inSavepoint {
+            try Player(name: "Charlie", score: 500).insert(db)
+            return .rollback  // Rollback only Charlie
+        }
+        
+        return .commit  // Commit Barbara
+    }
+    
+    // Arthur and Barbara are inserted, Charlie is NOT inserted
+}
+```
+
+## Write Without Transaction
+
+Some operations need to execute without a transaction:
+
+```swift
+try dbQueue.writeWithoutTransaction { db in
+    // No transaction - each statement auto-commits
+    try Player(name: "Arthur", score: 100).insert(db)
+    try Player(name: "Barbara", score: 1000).insert(db)
+}
+```
+
+<Warning>
+  Without a transaction, each statement auto-commits. If an error occurs, previous statements are not rolled back.
+</Warning>
+
+### When to Use
+
+<Tabs>
+  <Tab title="Schema Changes">
+    ```swift
+    try dbQueue.writeWithoutTransaction { db in
+        // Some SQLite statements can't run inside transactions
+        try db.execute(sql: "VACUUM")
+    }
+    ```
+  </Tab>
+  <Tab title="Manual Transactions">
+    ```swift
+    try dbQueue.writeWithoutTransaction { db in
+        try db.execute(sql: "BEGIN IMMEDIATE")
+        try Player(name: "Arthur", score: 100).insert(db)
+        try db.execute(sql: "COMMIT")
+    }
+    ```
+  </Tab>
+  <Tab title="Multiple Transactions">
+    ```swift
+    try dbQueue.writeWithoutTransaction { db in
+        try db.inTransaction {
+            try Player(name: "Arthur", score: 100).insert(db)
+            return .commit
+        }
+        
+        try db.inTransaction {
+            try Player(name: "Barbara", score: 1000).insert(db)
+            return .commit
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## DatabasePool Specifics
+
+DatabasePool has additional write methods:
+
+### writeInTransaction
+
+```swift
+try dbPool.writeInTransaction { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    return .commit
+}
+```
+
+### barrierWriteWithoutTransaction
+
+Barrier writes wait for all reads to complete:
+
+```swift
+try dbPool.barrierWriteWithoutTransaction { db in
+    // Waits for all concurrent reads to finish
+    try db.execute(sql: "DROP TABLE temp_table")
+}
+```
+
+<Note>
+  Barrier writes are useful when you need to ensure no concurrent reads are happening, such as when dropping tables or performing schema changes.
+</Note>
+
+## Transaction Hooks
+
+Observe transaction lifecycle events:
+
+```swift
+try dbQueue.write { db in
+    db.afterNextTransaction(onCommit: {
+        print("Transaction committed!")
+    }, onRollback: { _ in
+        print("Transaction rolled back!")
+    })
+    
+    try Player(name: "Arthur", score: 100).insert(db)
+}
+```
+
+### Multiple Hooks
+
+```swift
+try dbQueue.write { db in
+    // First hook
+    db.afterNextTransaction(onCommit: {
+        print("Saving to UserDefaults")
+        UserDefaults.standard.set(true, forKey: "dataChanged")
+    }, onRollback: { _ in
+        print("No changes to save")
+    })
+    
+    // Second hook
+    db.afterNextTransaction(onCommit: {
+        print("Posting notification")
+        NotificationCenter.default.post(name: .dataChanged, object: nil)
+    })
+    
+    try Player(name: "Arthur", score: 100).insert(db)
+}
+```
+
+## Error Handling
+
+<CodeGroup>
+```swift Basic Error Handling
+do {
+    try dbQueue.inTransaction { db in
+        try Player(name: "Arthur", score: 100).insert(db)
+        try Player(name: "Barbara", score: 1000).insert(db)
+        return .commit
+    }
+} catch {
+    print("Transaction failed: \(error)")
+    // All changes automatically rolled back
+}
+```
+
+```swift Conditional Rollback
+try dbQueue.inTransaction { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    
+    let count = try Player.fetchCount(db)
+    if count > 100 {
+        // Too many players, rollback
+        return .rollback
+    }
+    
+    try Player(name: "Barbara", score: 1000).insert(db)
+    return .commit
+}
+```
+
+```swift Savepoint Error Recovery
+try dbQueue.write { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    
+    do {
+        try db.inSavepoint {
+            try Player(name: "Barbara", score: 1000).insert(db)
+            throw CustomError()  // Rollback savepoint only
+        }
+    } catch {
+        print("Savepoint rolled back, but Arthur remains")
+    }
+    
+    // Transaction continues, Arthur is still inserted
+}
+```
+</CodeGroup>
+
+## Common Patterns
+
+### Atomic Batch Operations
+
+```swift
+func insertPlayers(_ players: [Player]) throws {
+    try dbQueue.write { db in
+        for player in players {
+            try player.insert(db)
+        }
+        // All or nothing - if any insert fails, all are rolled back
+    }
+}
+```
+
+### Conditional Commit
+
+```swift
+try dbQueue.inTransaction { db in
+    try Player(name: "Arthur", score: 100).insert(db)
+    
+    // Validate state
+    let totalPlayers = try Player.fetchCount(db)
+    guard totalPlayers <= 1000 else {
+        return .rollback  // Too many players
+    }
+    
+    return .commit
+}
+```
+
+### Progressive Updates with Savepoints
+
+```swift
+try dbQueue.write { db in
+    var successfulUpdates = 0
+    
+    for player in players {
+        try db.inSavepoint {
+            do {
+                try player.insert(db)
+                successfulUpdates += 1
+                return .commit
+            } catch {
+                print("Failed to insert \(player.name)")
+                return .rollback  // Skip this player, continue with others
+            }
+        }
+    }
+    
+    print("Inserted \(successfulUpdates) players")
+}
+```
+
+### Transaction Retry Logic
+
+```swift
+func retryTransaction<T>(
+    maxAttempts: Int = 3,
+    operation: (Database) throws -> T
+) throws -> T {
+    var lastError: Error?
+    
+    for attempt in 1...maxAttempts {
+        do {
+            return try dbQueue.inTransaction { db in
+                let result = try operation(db)
+                return .commit
+            }
+        } catch let error as DatabaseError where error.resultCode == .SQLITE_BUSY {
+            lastError = error
+            print("Attempt \(attempt) failed, retrying...")
+            Thread.sleep(forTimeInterval: 0.1)
+            continue
+        } catch {
+            throw error
+        }
+    }
+    
+    throw lastError ?? DatabaseError(message: "Transaction failed")
+}
+```
+
+## Transaction Observation
+
+Implement `TransactionObserver` for advanced observation:
+
+```swift
+class ChangeObserver: TransactionObserver {
+    func observes(eventsOfKind eventKind: DatabaseEventKind) -> Bool {
+        return true  // Observe all events
+    }
+    
+    func databaseDidChange(with event: DatabaseEvent) {
+        print("Changed: \(event.tableName)")
+    }
+    
+    func databaseWillCommit() throws {
+        print("About to commit")
+    }
+    
+    func databaseDidCommit(_ db: Database) {
+        print("Committed!")
+    }
+    
+    func databaseDidRollback(_ db: Database) {
+        print("Rolled back!")
+    }
+}
+
+// Register observer
+try dbQueue.write { db in
+    db.add(transactionObserver: ChangeObserver())
+}
+```
+
+## Best Practices
+
+<Tabs>
+  <Tab title="Keep Transactions Short">
+    ```swift
+    // ✅ GOOD: Short transaction
+    try dbQueue.write { db in
+        try player.insert(db)
+    }
+    
+    // ❌ BAD: Long transaction
+    try dbQueue.write { db in
+        let data = downloadLargeFile()  // Don't do slow operations in transactions
+        try processData(data, db: db)
+    }
+    ```
+  </Tab>
+  <Tab title="Use Appropriate Transaction Kind">
+    ```swift
+    // ✅ GOOD: Deferred for read-heavy
+    try dbQueue.inTransaction(.deferred) { db in
+        let players = try Player.fetchAll(db)
+        try updateScore(for: players.first!, db: db)
+        return .commit
+    }
+    
+    // ✅ GOOD: Immediate for write-heavy
+    try dbQueue.inTransaction(.immediate) { db in
+        try insertManyPlayers(db: db)
+        return .commit
+    }
+    ```
+  </Tab>
+  <Tab title="Avoid Nested Transactions">
+    ```swift
+    // ✅ GOOD: Use savepoints for nesting
+    try dbQueue.write { db in
+        try player1.insert(db)
+        try db.inSavepoint {
+            try player2.insert(db)
+            return .commit
+        }
+    }
+    
+    // ❌ BAD: Don't nest transactions
+    try dbQueue.inTransaction { db in
+        try dbQueue.inTransaction { db in  // ERROR!
+            return .commit
+        }
+        return .commit
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Performance Considerations
+
+### Batch Operations
+
+Transactions significantly improve bulk insert performance:
+
+```swift
+// Slow: Individual transactions (implicit)
+for player in players {
+    try dbQueue.write { db in
+        try player.insert(db)
+    }
+}
+
+// Fast: Single transaction
+try dbQueue.write { db in
+    for player in players {
+        try player.insert(db)
+    }
+}
+```
+
+### Transaction Size
+
+Balance transaction size with performance:
+
+```swift
+// Process in batches
+let batchSize = 1000
+for batch in players.chunked(into: batchSize) {
+    try dbQueue.write { db in
+        for player in batch {
+            try player.insert(db)
+        }
+    }
+}
+```
+
+## Next Steps
+
+- [Database Connections](/core/database-connections) - Learn about DatabaseQueue and DatabasePool
+- [Records](/records/overview) - Learn about persistence methods
+- [Concurrency](/advanced/concurrency) - Learn about thread safety and async operations

@@ -1,0 +1,139 @@
+---
+title: "Introduction"
+description: "A toolkit for SQLite databases, with a focus on application development"
+---
+
+<img
+  className="block dark:hidden"
+  src="https://raw.githubusercontent.com/groue/GRDB.swift/master/GRDB.png"
+  alt="GRDB.swift"
+/>
+<img
+  className="hidden dark:block"
+  src="https://raw.githubusercontent.com/groue/GRDB.swift/master/GRDB~dark.png"
+  alt="GRDB.swift"
+/>
+
+## What is GRDB?
+
+GRDB.swift is a comprehensive SQLite toolkit for Swift that helps you build database-driven applications with confidence. Whether you're building an iOS app, macOS application, or cross-platform Swift project, GRDB provides the tools you need to work efficiently with SQLite databases.
+
+<CardGroup cols={2}>
+  <Card title="SQL Generation" icon="wand-magic-sparkles">
+    Generate SQL automatically with a type-safe query interface, or write raw SQL when you need full control
+  </Card>
+  <Card title="Database Observation" icon="eye">
+    Get notified when database values change with ValueObservation and reactive programming support
+  </Card>
+  <Card title="Robust Concurrency" icon="gears">
+    Multi-threaded applications can efficiently access databases with WAL mode support for concurrent reads and writes
+  </Card>
+  <Card title="Migrations" icon="arrows-rotate">
+    Evolve your database schema safely as your application grows and changes over time
+  </Card>
+</CardGroup>
+
+## Key Features
+
+GRDB provides a comprehensive set of features for SQLite database development:
+
+- **Record Protocols**: Define your models with `FetchableRecord` and `PersistableRecord` for automatic persistence
+- **Query Interface**: Build type-safe queries with Swift's expressive syntax
+- **Full-Text Search**: Leverage SQLite's FTS3, FTS4, and FTS5 engines for powerful text search
+- **Swift Concurrency**: First-class support for async/await and structured concurrency
+- **Combine Support**: Reactive database access with Combine publishers
+- **Type-Safe SQL**: Use SQL interpolation to prevent injection vulnerabilities
+- **Associations**: Define relationships between records with belongs-to, has-many, and has-one associations
+- **Database Encryption**: Secure your data with SQLCipher integration
+
+## Why Choose GRDB?
+
+<AccordionGroup>
+  <Accordion title="Battle-Tested Reliability">
+    GRDB has been serving the Swift community since 2015, with over 8,000 stars on GitHub and widespread adoption in production applications.
+  </Accordion>
+  
+  <Accordion title="Performance Focused">
+    Built with performance in mind, GRDB provides direct access to SQLite while adding zero-cost abstractions for common operations.
+  </Accordion>
+  
+  <Accordion title="Comprehensive Documentation">
+    Extensive documentation, guides, and examples help you get started quickly and master advanced features.
+  </Accordion>
+  
+  <Accordion title="Active Development">
+    Regular updates bring support for new Swift versions, performance improvements, and feature enhancements.
+  </Accordion>
+</AccordionGroup>
+
+## Quick Example
+
+Here's a taste of what working with GRDB looks like:
+
+```swift
+import GRDB
+
+// Open a connection
+let dbQueue = try DatabaseQueue(path: "/path/to/database.sqlite")
+
+// Define your model
+struct Player: Codable, FetchableRecord, PersistableRecord {
+    var id: Int64
+    var name: String
+    var score: Int
+}
+
+// Create the table
+try dbQueue.write { db in
+    try db.create(table: "player") { t in
+        t.autoIncrementedPrimaryKey("id")
+        t.column("name", .text).notNull()
+        t.column("score", .integer).notNull()
+    }
+}
+
+// Insert records
+try dbQueue.write { db in
+    var player = Player(id: 0, name: "Arthur", score: 100)
+    try player.insert(db)
+}
+
+// Query with the Swift interface
+let topPlayers = try dbQueue.read { db in
+    try Player
+        .order(Column("score").desc)
+        .limit(10)
+        .fetchAll(db)
+}
+```
+
+## Platform Support
+
+GRDB supports all Apple platforms and Linux:
+
+- iOS 13.0+
+- macOS 10.15+
+- tvOS 13.0+
+- watchOS 7.0+
+- Linux (community supported)
+
+<Note>
+GRDB requires Swift 6.1+ and Xcode 16.3+. Make sure your development environment meets these requirements.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add GRDB to your project with Swift Package Manager, CocoaPods, or manual installation
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first GRDB application in minutes with our quickstart guide
+  </Card>
+  <Card title="Core Concepts" icon="book" href="/core/database-connections">
+    Learn the fundamental concepts of working with GRDB databases
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/database-queue">
+    Explore the complete GRDB API documentation
+  </Card>
+</CardGroup>

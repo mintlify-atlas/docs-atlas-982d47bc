@@ -1,0 +1,370 @@
+---
+title: "SQL Interpolation"
+description: "Safe SQL string interpolation with compile-time validation"
+---
+
+GRDB provides SQL interpolation that safely embeds Swift values in SQL queries with compile-time syntax validation.
+
+## Overview
+
+SQL interpolation combines the readability of raw SQL with the safety of parameter binding:
+
+```swift
+let name = "Arthur"
+let minScore = 1000
+
+// Safe interpolation
+let players = try Player.fetchAll(db, sql: """
+    SELECT * FROM player
+    WHERE name = \(name) AND score > \(minScore)
+    """)
+```
+
+<Tip>
+SQL interpolation validates SQL syntax at compile time and prevents SQL injection.
+</Tip>
+
+## Basic Usage
+
+### Interpolating Values
+
+```swift
+let name = "Arthur"
+try db.execute(sql: """
+    INSERT INTO player (name) VALUES (\(name))
+    """)
+```
+
+This generates:
+```sql
+INSERT INTO player (name) VALUES (?)
+```
+
+The value is safely bound as a parameter.
+
+### Fetching with Interpolation
+
+```swift
+let minScore = 1000
+let players = try Player.fetchAll(db, sql: """
+    SELECT * FROM player WHERE score > \(minScore)
+    """)
+```
+
+## SQL Literals
+
+Use `SQL` to create reusable SQL fragments:
+
+```swift
+let name = "Arthur"
+let condition = SQL("name = \(name)")
+
+let players = try Player.fetchAll(db, sql: """
+    SELECT * FROM player WHERE \(literal: condition)
+    """)
+```
+
+### Combining Literals
+
+```swift
+let name = "Arthur"
+let minScore = 1000
+
+let nameCondition = SQL("name = \(name)")
+let scoreCondition = SQL("score > \(minScore)")
+let combined = SQL("WHERE \(literal: nameCondition) AND \(literal: scoreCondition)")
+
+let sql: SQL = """
+    SELECT * FROM player \(literal: combined)
+    """
+let players = try Player.fetchAll(db, sql)
+```
+
+## Interpolation Options
+
+### Default: Value Binding
+
+Values are bound as parameters (default behavior):
+
+```swift
+let value = 42
+SQL("score = \(value)") // Generates: score = ?
+```
+
+### literal: Raw SQL
+
+Insert raw SQL without binding:
+
+```swift
+let column = "score"
+SQL("SELECT \(literal: column) FROM player") 
+// Generates: SELECT score FROM player
+```
+
+<Warning>
+Only use `literal:` with trusted, non-user input to prevent SQL injection.
+</Warning>
+
+### Column Names
+
+```swift
+let column = Column("score")
+SQL("SELECT \(column) FROM player")
+// Generates: SELECT score FROM player
+```
+
+### Table Names
+
+```swift
+let table = "player"
+SQL("SELECT * FROM \(literal: table)")
+// Generates: SELECT * FROM player
+```
+
+## Array Interpolation
+
+### IN Clauses
+
+```swift
+let ids = [1, 2, 3]
+let players = try Player.fetchAll(db, sql: """
+    SELECT * FROM player WHERE id IN \(ids)
+    """)
+// Generates: SELECT * FROM player WHERE id IN (?, ?, ?)
+```
+
+### Multiple Values
+
+```swift
+let names = ["Arthur", "Barbara", "Craig"]
+try db.execute(sql: """
+    INSERT INTO player (name) VALUES \(names)
+    """)
+// Generates: INSERT INTO player (name) VALUES (?), (?), (?)
+```
+
+## Expressions
+
+### Arithmetic
+
+```swift
+let bonus = 100
+SQL("score + \(bonus)")
+// Generates: score + ?
+```
+
+### Comparisons
+
+```swift
+let threshold = 1000
+SQL("score > \(threshold)")
+SQL("score >= \(threshold)")
+SQL("score = \(threshold)")
+SQL("score != \(threshold)")
+```
+
+### Logic
+
+```swift
+let active = true
+let verified = true
+SQL("active = \(active) AND verified = \(verified)")
+```
+
+## NULL Values
+
+```swift
+let optionalName: String? = nil
+SQL("name = \(optionalName)") 
+// Generates: name = NULL (or name IS NULL)
+
+let name: String? = "Arthur"
+SQL("name = \(name)") 
+// Generates: name = ?
+```
+
+## Date and Time
+
+```swift
+let date = Date()
+try db.execute(sql: """
+    INSERT INTO event (createdAt) VALUES (\(date))
+    """)
+```
+
+Dates are stored according to your [`databaseDateEncodingStrategy`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/fetchablerecord/databasedateencodingstrategy(for:)).
+
+## JSON
+
+```swift
+struct Metadata: Codable {
+    var tags: [String]
+}
+
+let metadata = Metadata(tags: ["swift", "database"])
+try db.execute(sql: """
+    INSERT INTO item (metadata) VALUES (\(metadata))
+    """)
+```
+
+## Custom Types
+
+Any [`DatabaseValueConvertible`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databasevalueconvertible) type can be interpolated:
+
+```swift
+enum Status: String, DatabaseValueConvertible {
+    case active, inactive
+}
+
+let status = Status.active
+SQL("status = \(status)")
+// Generates: status = ?
+```
+
+## Building Dynamic Queries
+
+### Conditional Clauses
+
+```swift
+func fetchPlayers(
+    name: String?,
+    minScore: Int?,
+    db: Database
+) throws -> [Player] {
+    var conditions: [SQL] = []
+    
+    if let name {
+        conditions.append(SQL("name = \(name)"))
+    }
+    
+    if let minScore {
+        conditions.append(SQL("score > \(minScore)"))
+    }
+    
+    let whereClause = conditions.isEmpty
+        ? SQL("")
+        : SQL("WHERE \(literal: conditions.joined(separator: " AND "))")
+    
+    return try Player.fetchAll(db, sql: """
+        SELECT * FROM player \(literal: whereClause)
+        """)
+}
+```
+
+### Dynamic Sorting
+
+```swift
+enum SortOrder {
+    case name, score
+    
+    var sql: SQL {
+        switch self {
+        case .name: return "ORDER BY name"
+        case .score: return "ORDER BY score DESC"
+        }
+    }
+}
+
+func fetchPlayers(sortedBy order: SortOrder, db: Database) throws -> [Player] {
+    try Player.fetchAll(db, sql: """
+        SELECT * FROM player \(literal: order.sql)
+        """)
+}
+```
+
+## Compile-Time Validation
+
+SQL syntax errors are caught at compile time:
+
+```swift
+// ❌ Compile error: Expected expression
+SQL("SELECT FROM player")
+
+// ❌ Compile error: Expected table name
+SQL("INSERT INTO (name) VALUES (?)")
+
+// ✅ Valid SQL
+SQL("SELECT * FROM player WHERE score > ?")
+```
+
+## Debugging
+
+Print SQL for debugging:
+
+```swift
+let name = "Arthur"
+let sql: SQL = "SELECT * FROM player WHERE name = \(name)"
+print(sql.sql) // SELECT * FROM player WHERE name = ?
+print(sql.arguments) // ["Arthur"]
+```
+
+## Best Practices
+
+<Tip>
+Use interpolation for values, `literal:` only for identifiers:
+
+```swift
+let name = "Arthur"     // User input - use interpolation
+let column = "name"     // Developer-controlled - use literal:
+
+SQL("SELECT * FROM player WHERE \(literal: column) = \(name)")
+```
+</Tip>
+
+<Tip>
+Build complex queries from SQL fragments:
+
+```swift
+let baseQuery = SQL("SELECT * FROM player")
+let filter = SQL("WHERE score > \(1000)")
+let order = SQL("ORDER BY score DESC")
+
+let fullQuery = SQL("""
+    \(literal: baseQuery)
+    \(literal: filter)
+    \(literal: order)
+    """)
+```
+</Tip>
+
+<Warning>
+Never interpolate user input with `literal:`:
+
+```swift
+// ❌ DANGEROUS - SQL injection risk!
+let userInput = request.parameter("name")
+SQL("SELECT * FROM player WHERE name = \(literal: userInput)")
+
+// ✅ SAFE - value is bound as parameter
+SQL("SELECT * FROM player WHERE name = \(userInput)")
+```
+</Warning>
+
+## Performance
+
+SQL interpolation has minimal overhead:
+
+- Compile-time validation means no runtime parsing
+- Parameters are bound efficiently using SQLite's prepared statement API
+- Reusable `SQL` values can be cached
+
+## Limitations
+
+<Note>
+SQL interpolation validates syntax but not semantics. Column and table names are not verified against your schema.
+</Note>
+
+<Note>
+Some complex SQL features may require raw SQL strings or the query interface instead.
+</Note>
+
+## Related Topics
+
+- [`query-interface`](/api/query-interface) - Type-safe query building
+- [`Database`](/api/database) - Executing SQL
+- [DatabaseValueConvertible](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databasevalueconvertible)
+
+## See Also
+
+- [SQL Interpolation Guide](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/sqlinterpolation)
+- [SQL Support](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/sqlsupport)

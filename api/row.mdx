@@ -1,0 +1,509 @@
+---
+title: "Row"
+description: "A database row with column values"
+---
+
+`Row` represents a row of data fetched from the database, providing access to column values.
+
+## Overview
+
+Fetch and decode rows from the database:
+
+```swift
+try dbQueue.read { db in
+    let rows = try Row.fetchAll(db, sql: "SELECT * FROM player")
+    for row in rows {
+        let id: Int64 = row["id"]
+        let name: String = row["name"]
+        let score: Int = row["score"]
+        print("\(name): \(score)")
+    }
+}
+```
+
+<Tip>
+Rows are lightweight references to database data. For permanent storage, decode into your own types or call `row.copy()`.
+</Tip>
+
+## Creating Rows
+
+### init()
+
+Creates an empty row:
+
+```swift
+let row = Row()
+```
+
+### init(_:)
+
+Creates a row from a dictionary:
+
+```swift
+let row = Row(["id": 1, "name": "Arthur", "score": 100])
+```
+
+### Fetching from Database
+
+See [Fetching Rows](#fetching-rows) below.
+
+## Accessing Column Values
+
+### By Column Name
+
+Access values using subscript with column name:
+
+```swift
+let row = try Row.fetchOne(db, sql: "SELECT * FROM player WHERE id = 1")!
+
+let id: Int64 = row["id"]
+let name: String = row["name"]
+let score: Int = row["score"]
+```
+
+### By Column Index
+
+Access values by index:
+
+```swift
+let id: Int64 = row[0]  // First column
+let name: String = row[1]  // Second column
+```
+
+### By Column
+
+Use `Column` for type-safe access:
+
+```swift
+let id: Int64 = row[Column("id")]
+let name: String = row[Column("name")]
+```
+
+### Optional Values
+
+Handle NULL values with optionals:
+
+```swift
+let deletedAt: Date? = row["deletedAt"]  // nil if NULL
+let email: String? = row["email"]  // nil if NULL
+```
+
+### decode(_:forColumn:)
+
+Explicit decoding with error handling:
+
+```swift
+do {
+    let name: String = try row.decode(String.self, forColumn: "name")
+} catch {
+    print("Failed to decode: \(error)")
+}
+```
+
+## Row Information
+
+### count
+
+<ResponseField name="count" type="Int">
+  The number of columns in the row
+</ResponseField>
+
+```swift
+let row = try Row.fetchOne(db, sql: "SELECT id, name FROM player")!
+print(row.count) // 2
+```
+
+### columnNames
+
+<ResponseField name="columnNames" type="LazyMapCollection<Row, String>">
+  The names of all columns
+</ResponseField>
+
+```swift
+let row = try Row.fetchOne(db, sql: "SELECT * FROM player")!
+print(Array(row.columnNames)) // ["id", "name", "score"]
+```
+
+### hasColumn(_:)
+
+Checks if a column exists:
+
+```swift
+if row.hasColumn("email") {
+    let email: String? = row["email"]
+}
+```
+
+### hasNull(atIndex:)
+
+Checks if a column contains NULL:
+
+```swift
+if row.hasNull(atIndex: 0) {
+    print("First column is NULL")
+}
+```
+
+### databaseValues
+
+<ResponseField name="databaseValues" type="[DatabaseValue]">
+  All column values as `DatabaseValue`
+</ResponseField>
+
+```swift
+let values = row.databaseValues
+for (index, value) in values.enumerated() {
+    print("Column \(index): \(value)")
+}
+```
+
+### containsNonNullValue
+
+<ResponseField name="containsNonNullValue" type="Bool">
+  Whether the row contains at least one non-NULL value
+</ResponseField>
+
+```swift
+if row.containsNonNullValue {
+    print("Row has data")
+}
+```
+
+## Fetching Rows
+
+### From SQL Queries
+
+#### fetchAll
+
+```swift
+let rows = try Row.fetchAll(db, sql: """
+    SELECT * FROM player WHERE score > ?
+    """, arguments: [1000])
+```
+
+#### fetchOne
+
+```swift
+let row = try Row.fetchOne(db, sql: """
+    SELECT * FROM player WHERE id = ?
+    """, arguments: [1])
+```
+
+#### fetchCursor
+
+```swift
+let cursor = try Row.fetchCursor(db, sql: "SELECT * FROM player")
+while let row = try cursor.next() {
+    let name: String = row["name"]
+    print(name)
+}
+```
+
+### From Prepared Statements
+
+```swift
+let statement = try db.makeStatement(sql: """
+    SELECT * FROM player WHERE score > ?
+    """)
+
+let rows = try Row.fetchAll(statement, arguments: [1000])
+```
+
+### From Requests
+
+```swift
+let request = Player.filter(Column("score") > 1000)
+let rows = try Row.fetchAll(db, request)
+```
+
+## Row Scopes
+
+When using associations, related rows are available through scopes:
+
+```swift
+struct Player: TableRecord {
+    static let team = belongsTo(Team.self)
+}
+
+let request = Player.including(required: Player.team)
+let row = try Row.fetchOne(db, request)!
+
+let playerRow = row.scopes["player"]!
+let teamRow = row.scopes["team"]!
+
+let playerName: String = playerRow["name"]
+let teamName: String = teamRow["name"]
+```
+
+### scopes
+
+<ResponseField name="scopes" type="Row.ScopesView">
+  A dictionary-like view of scoped rows
+</ResponseField>
+
+```swift
+if let teamRow = row.scopes["team"] {
+    let teamName: String = teamRow["name"]
+}
+```
+
+### unscoped
+
+<ResponseField name="unscoped" type="Row">
+  The row without any scope
+</ResponseField>
+
+```swift
+let unscopedRow = row.unscoped
+```
+
+## Prefetched Rows
+
+When using `including(all:)` associations, prefetched rows are available:
+
+```swift
+struct Author: TableRecord {
+    static let books = hasMany(Book.self)
+}
+
+let request = Author.including(all: Author.books)
+let row = try Row.fetchOne(db, request)!
+
+let authorName: String = row["name"]
+let bookRows = row.prefetchedRows["books"]!
+for bookRow in bookRows {
+    let title: String = bookRow["title"]
+    print(title)
+}
+```
+
+### prefetchedRows
+
+<ResponseField name="prefetchedRows" type="Row.PrefetchedRowsView">
+  A dictionary of prefetched row arrays
+</ResponseField>
+
+## Copying Rows
+
+### copy()
+
+Creates an immutable copy:
+
+```swift
+let cursor = try Row.fetchCursor(db, sql: "SELECT * FROM player")
+var savedRows: [Row] = []
+
+while let row = try cursor.next() {
+    savedRows.append(row.copy()) // Copy to keep the row
+}
+```
+
+<Warning>
+Rows fetched from cursors are reused during iteration. Always copy rows if you need to store them.
+</Warning>
+
+## Decoding Custom Types
+
+Decode your types from rows:
+
+```swift
+struct Player {
+    var id: Int64
+    var name: String
+    var score: Int
+    
+    init(row: Row) {
+        id = row["id"]
+        name = row["name"]
+        score = row["score"]
+    }
+}
+
+let rows = try Row.fetchAll(db, sql: "SELECT * FROM player")
+let players = rows.map { Player(row: $0) }
+```
+
+Or use [`FetchableRecord`](/api/fetchable-record) for automatic decoding.
+
+## Hashable Rows
+
+When rows conform to Hashable, you can fetch into a Set:
+
+```swift
+let rows = try Row.fetchSet(db, sql: "SELECT DISTINCT name FROM player")
+```
+
+## RandomAccessCollection
+
+Rows conform to `RandomAccessCollection`:
+
+```swift
+let row = try Row.fetchOne(db, sql: "SELECT * FROM player")!
+
+for (column, value) in row {
+    print("\(column): \(value)")
+}
+
+let firstValue = row[row.startIndex]
+let lastValue = row[row.endIndex - 1]
+```
+
+## Data Types
+
+Rows decode standard Swift types:
+
+### Integers
+
+```swift
+let int: Int = row["value"]
+let int8: Int8 = row["value"]
+let int16: Int16 = row["value"]
+let int32: Int32 = row["value"]
+let int64: Int64 = row["value"]
+let uint: UInt = row["value"]
+// ... other integer types
+```
+
+### Floating Point
+
+```swift
+let float: Float = row["value"]
+let double: Double = row["value"]
+```
+
+### Strings
+
+```swift
+let string: String = row["value"]
+```
+
+### Data
+
+```swift
+let data: Data = row["value"]
+```
+
+### Bool
+
+```swift
+let bool: Bool = row["value"]  // 0 = false, non-zero = true
+```
+
+### Date
+
+```swift
+let date: Date = row["createdAt"]
+```
+
+### UUID
+
+```swift
+let uuid: UUID = row["id"]
+```
+
+### URL
+
+```swift
+let url: URL = row["website"]
+```
+
+## Working with NULL
+
+### Optional Decoding
+
+```swift
+let name: String? = row["name"]  // nil if NULL
+let score: Int? = row["score"]    // nil if NULL
+```
+
+### Checking for NULL
+
+```swift
+if row.hasNull(atIndex: 0) {
+    print("First column is NULL")
+}
+
+let value: DatabaseValue = row[0]
+if value.isNull {
+    print("Value is NULL")
+}
+```
+
+### Default Values
+
+```swift
+let score: Int = row["score"] ?? 0
+let name: String = row["name"] ?? "Unknown"
+```
+
+## Performance Tips
+
+<Tip>
+Use cursors for large result sets:
+
+```swift
+let cursor = try Row.fetchCursor(db, sql: "SELECT * FROM player")
+while let row = try cursor.next() {
+    // Process one row at a time
+}
+```
+</Tip>
+
+<Tip>
+Decode to custom types instead of working with rows directly:
+
+```swift
+// Better
+let players = try Player.fetchAll(db)
+
+// Less efficient
+let rows = try Row.fetchAll(db, sql: "SELECT * FROM player")
+let players = rows.map { Player(row: $0) }
+```
+</Tip>
+
+<Warning>
+Rows from cursors are reused. Always copy rows if you need to store them:
+
+```swift
+let cursor = try Row.fetchCursor(db, sql: "SELECT * FROM player")
+var rows: [Row] = []
+while let row = try cursor.next() {
+    rows.append(row.copy())  // Don't forget to copy!
+}
+```
+</Warning>
+
+## Error Handling
+
+### Missing Columns
+
+```swift
+do {
+    let value: String = try row.decode(String.self, forColumn: "nonexistent")
+} catch let error as RowDecodingError {
+    print("Column not found: \(error)")
+}
+```
+
+### Type Mismatches
+
+```swift
+do {
+    let value: Int = row["name"]  // name is a string
+} catch {
+    print("Type mismatch: \(error)")
+}
+```
+
+## Related Topics
+
+- [`FetchableRecord`](/api/fetchable-record) - Decoding custom types from rows
+- [`DatabaseValue`](/api/database-value) - Individual column values
+- [DatabaseValueConvertible](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databasevalueconvertible) - Type conversion
+
+## See Also
+
+- [Row Documentation](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/row)
+- [Fetching Values](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/fetchingvalues)
+- [Records](/api/fetchable-record)

@@ -1,0 +1,391 @@
+---
+title: "Database"
+description: "Low-level SQLite database connection for executing SQL"
+---
+
+`Database` represents a raw SQLite connection. You don't create instances directly; instead, access them through [`DatabaseQueue`](/api/database-queue) or [`DatabasePool`](/api/database-pool) access methods.
+
+## Overview
+
+```swift
+try dbQueue.write { db in
+    // db is a Database instance
+    try db.execute(sql: "CREATE TABLE player (id INTEGER PRIMARY KEY, name TEXT)")
+}
+```
+
+## Properties
+
+<ResponseField name="configuration" type="Configuration">
+  The database configuration
+</ResponseField>
+
+<ResponseField name="lastInsertedRowID" type="Int64">
+  The rowID of the most recently inserted row
+</ResponseField>
+
+<ResponseField name="changesCount" type="Int">
+  The number of rows modified by the most recent INSERT, UPDATE, or DELETE
+</ResponseField>
+
+<ResponseField name="totalChangesCount" type="Int">
+  The total number of rows modified since the connection was opened
+</ResponseField>
+
+<ResponseField name="isInsideTransaction" type="Bool">
+  Whether the database is currently inside a transaction
+</ResponseField>
+
+<ResponseField name="transactionDate" type="Date">
+  The date of the current transaction (constant during a transaction)
+</ResponseField>
+
+## Executing SQL
+
+### execute(sql:arguments:)
+
+Executes an SQL statement.
+
+<ParamField path="sql" type="String" required>
+  The SQL statement to execute
+</ParamField>
+
+<ParamField path="arguments" type="StatementArguments" default="StatementArguments()">
+  Optional statement arguments
+</ParamField>
+
+```swift
+try db.execute(sql: """
+    CREATE TABLE player (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        score INTEGER
+    )
+    """)
+
+try db.execute(
+    sql: "INSERT INTO player (name, score) VALUES (?, ?)",
+    arguments: ["Arthur", 100]
+)
+```
+
+### execute(literal:)
+
+Executes an SQL literal with interpolated values.
+
+```swift
+let name = "Arthur"
+let score = 100
+try db.execute(literal: """
+    INSERT INTO player (name, score) VALUES (\(name), \(score))
+    """)
+```
+
+<Tip>
+SQL literals provide compile-time SQL syntax validation and automatic argument binding.
+</Tip>
+
+## Creating Statements
+
+### makeStatement(sql:)
+
+Creates a reusable prepared statement.
+
+```swift
+let statement = try db.makeStatement(sql: """
+    SELECT * FROM player WHERE score > ?
+    """)
+
+let players = try Player.fetchAll(statement, arguments: [50])
+```
+
+### cachedStatement(sql:)
+
+Returns a cached prepared statement for better performance.
+
+```swift
+let statement = try db.cachedStatement(sql: """
+    UPDATE player SET score = ? WHERE id = ?
+    """)
+
+try statement.execute(arguments: [150, 1])
+```
+
+<Note>
+Cached statements are automatically cleared when the database schema changes.
+</Note>
+
+## Transactions
+
+### beginTransaction(_:)
+
+Begins a transaction.
+
+<ParamField path="kind" type="Database.TransactionKind" default=".deferred">
+  The transaction kind: `.deferred`, `.immediate`, or `.exclusive`
+</ParamField>
+
+```swift
+try db.beginTransaction(.immediate)
+try Player(name: "Arthur").insert(db)
+try db.commit()
+```
+
+### commit()
+
+Commits the current transaction.
+
+```swift
+try db.commit()
+```
+
+### rollback()
+
+Rolls back the current transaction.
+
+```swift
+try db.rollback()
+```
+
+### inTransaction(_:_:)
+
+Executes a closure in a transaction.
+
+```swift
+try db.inTransaction { db in
+    try Player(name: "Arthur").insert(db)
+    try Player(name: "Barbara").insert(db)
+    return .commit // or .rollback
+}
+```
+
+### inSavepoint(_:)
+
+Executes a closure in a savepoint.
+
+```swift
+try db.inSavepoint {
+    try Player(name: "Arthur").insert(db)
+    try Player(name: "Barbara").insert(db)
+    return .commit
+}
+```
+
+<Note>
+Savepoints can be nested and allow partial rollbacks within a transaction.
+</Note>
+
+## Database Functions
+
+### add(function:)
+
+Adds a custom SQL function.
+
+```swift
+let uppercase = DatabaseFunction("uppercase", argumentCount: 1) { dbValues in
+    guard let string = String.fromDatabaseValue(dbValues[0]) else {
+        return .null
+    }
+    return string.uppercased().databaseValue
+}
+
+db.add(function: uppercase)
+
+let name = try String.fetchOne(db, sql: "SELECT uppercase('arthur')")!
+// name is "ARTHUR"
+```
+
+### remove(function:)
+
+Removes a custom SQL function.
+
+```swift
+db.remove(function: uppercase)
+```
+
+## Collations
+
+### add(collation:)
+
+Adds a custom collation for text comparison.
+
+```swift
+let collation = DatabaseCollation("reverse") { (lhs, rhs) in
+    // Compare strings in reverse
+    return lhs.reversed().caseInsensitiveCompare(rhs.reversed())
+}
+
+db.add(collation: collation)
+
+try db.execute(sql: """
+    CREATE TABLE item (name TEXT COLLATE reverse)
+    """)
+```
+
+## Database Observation
+
+### add(transactionObserver:extent:)
+
+Adds a transaction observer to monitor database changes.
+
+```swift
+let observer = MyTransactionObserver()
+db.add(transactionObserver: observer)
+```
+
+### registerAccess(to:)
+
+Registers that a specific database region is accessed during a ValueObservation.
+
+```swift
+let observation = ValueObservation.tracking { db in
+    try db.registerAccess(to: Player.all())
+    try db.registerAccess(to: Team.all())
+    // Fetch value
+}
+```
+
+### notifyChanges(in:)
+
+Notifies observers that changes occurred in a database region.
+
+```swift
+try db.notifyChanges(in: Player.all())
+```
+
+## Database Information
+
+### lastErrorCode
+
+The last SQLite error code.
+
+```swift
+let errorCode: ResultCode = db.lastErrorCode
+```
+
+### lastErrorMessage
+
+The last SQLite error message.
+
+```swift
+if let message = db.lastErrorMessage {
+    print("Error: \(message)")
+}
+```
+
+### maximumStatementArgumentCount
+
+The maximum number of arguments an SQLite statement can accept.
+
+```swift
+let maxArgs = db.maximumStatementArgumentCount // Typically 999
+```
+
+## Memory Management
+
+### releaseMemory()
+
+Frees as much memory as possible.
+
+```swift
+db.releaseMemory()
+```
+
+### clearSchemaCache()
+
+Clears the cached database schema information.
+
+```swift
+db.clearSchemaCache()
+```
+
+## Checkpoints
+
+### checkpoint(_:on:)
+
+Performs a WAL checkpoint.
+
+<ParamField path="mode" type="Database.CheckpointMode" default=".passive">
+  The checkpoint mode: `.passive`, `.full`, `.restart`, or `.truncate`
+</ParamField>
+
+<ParamField path="dbName" type="String?" default="main">
+  The database name
+</ParamField>
+
+```swift
+let (walFrameCount, checkpointedFrameCount) = try db.checkpoint(.full)
+print("Checkpointed \(checkpointedFrameCount) of \(walFrameCount) frames")
+```
+
+## Tracing
+
+### trace(options:_:)
+
+Traces SQL statements and other database events.
+
+```swift
+var config = Configuration()
+config.prepareDatabase { db in
+    db.trace(options: .statement) { event in
+        if case let .statement(statement) = event {
+            print("SQL: \(statement.sql)")
+        }
+    }
+}
+```
+
+## Read-Only Mode
+
+### readOnly(_:)
+
+Executes operations in read-only mode.
+
+```swift
+try db.readOnly {
+    let players = try Player.fetchAll(db) // OK
+    try Player(name: "Arthur").insert(db) // Throws SQLITE_READONLY
+}
+```
+
+## Static Properties
+
+<ResponseField name="logError" type="LogErrorFunction?">
+  Global error logging function
+</ResponseField>
+
+<ResponseField name="sqliteLibVersionNumber" type="CInt">
+  SQLite library version number
+</ResponseField>
+
+```swift
+// Set up global error logging
+Database.logError = { resultCode, message in
+    NSLog("SQLite error %@: %@", "\(resultCode)", message)
+}
+
+print(Database.sqliteLibVersionNumber) // e.g., 3048000
+```
+
+## Notifications
+
+<ResponseField name="suspendNotification" type="Notification.Name">
+  Notification posted to suspend database operations
+</ResponseField>
+
+<ResponseField name="resumeNotification" type="Notification.Name">
+  Notification posted to resume database operations
+</ResponseField>
+
+## Related Types
+
+- [`Statement`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/statement) - Prepared SQL statement
+- [`DatabaseFunction`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databasefunction) - Custom SQL function
+- [`DatabaseCollation`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databasecollation) - Custom text collation
+- [`TransactionObserver`](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/transactionobserver) - Database change observer
+
+## See Also
+
+- [Database Connections](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/databaseconnections)
+- [SQL Support](https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/sqlsupport)
+- [SQLite Documentation](https://www.sqlite.org/)
